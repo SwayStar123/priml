@@ -265,7 +265,7 @@ class SpeedrunDiT(nn.Module):
             raise ValueError("cls_token must have shape [batch, cls_channels]")
         spatial = self.x_embedder(x).flatten(2).transpose(1, 2)
         cls = self.wg_norm(self.cls_projector(cls_token))[:, None]
-        x = torch.cat((cls, spatial), dim=1) + self.pos_embed.to(spatial.dtype)
+        x = torch.cat((cls, spatial), dim=1) + self.pos_embed
         rope_factors = self.rope(image_token_positions(self.grid_size, x.device))
         condition = self.t_embedder(t) + self.y_embedder(
             y, force_drop=force_drop_labels

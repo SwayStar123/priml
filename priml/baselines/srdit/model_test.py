@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from torch import nn
+
+import pytest
 import torch
 
-from priml.baselines.srdit.model import SpeedrunDiT
+from priml.baselines.srdit.model import ModelOutput, SpeedrunDiT
 from priml.baselines.srdit.objective import SpeedrunObjective
 from priml.baselines.srdit.optimizers import srdit_optimizer
 from priml.baselines.srdit.sampling import sample_latents
@@ -78,6 +81,32 @@ def test_training_routing_alignment_and_backward() -> None:
     assert model.projector[0].weight.grad is not None
 
 
+def test_position_table_promotes_bfloat16_tokens_to_float32() -> None:
+    model = tiny_model().eval()
+    model.wg_norm = nn.Identity()
+    captured = None
+
+    class StopForwardError(Exception):
+        pass
+
+    def capture_input(_module: nn.Module, inputs: tuple[torch.Tensor, ...]) -> None:
+        nonlocal captured
+        captured = inputs[0]
+        raise StopForwardError
+
+    model.blocks[0].register_forward_pre_hook(capture_input)
+    with torch.autocast("cpu", dtype=torch.bfloat16), pytest.raises(StopForwardError):
+        model(
+            torch.randn(1, 2, 4, 4),
+            torch.full((1,), 0.5),
+            torch.tensor([1]),
+            torch.randn(1, 8),
+            route_tokens=False,
+        )
+    assert captured is not None
+    assert captured.dtype == torch.float32
+
+
 def test_optimizer_partitions_hidden_matrices_from_heads() -> None:
     model = tiny_model()
     optimizer = srdit_optimizer().make()(model)
@@ -111,3 +140,41 @@ def test_shift_and_sampler_return_expected_latent_shapes() -> None:
     assert sampled.shape == latents.shape
     assert sampled_cls.shape == cls.shape
     assert torch.isfinite(sampled).all()
+
+
+def test_zero_cls_guidance_keeps_conditional_cls_drift() -> None:
+    class ConstantVelocityModel(nn.Module):
+        config = type("Config", (), {"num_classes": 2})()
+
+        def forward(
+            self,
+            x: torch.Tensor,
+            t: torch.Tensor,
+            y: torch.Tensor,
+            cls: torch.Tensor,
+            **_kwargs: object,
+        ) -> ModelOutput:
+            del t
+            cls_velocity = torch.where(y[:, None] == 2, -1.0, 1.0).expand_as(cls)
+            return ModelOutput(torch.zeros_like(x), cls_velocity, ())
+
+    model = ConstantVelocityModel()
+    latents = torch.zeros(1, 2, 4, 4)
+    cls = torch.zeros(1, 8)
+    labels = torch.tensor([1])
+    torch.manual_seed(7)
+    _, conditional_cls = sample_latents(
+        model, latents, cls, labels, num_steps=2, shift_time=False
+    )
+    torch.manual_seed(7)
+    _, zero_guidance_cls = sample_latents(
+        model,
+        latents,
+        cls,
+        labels,
+        num_steps=2,
+        cfg_scale=2,
+        cls_cfg_scale=0,
+        shift_time=False,
+    )
+    assert torch.equal(zero_guidance_cls, conditional_cls)

@@ -127,7 +127,8 @@ def sample_latents(
                     uncond.cls_velocity.double() - 0.5 * diffusion * score_cls_u
                 )
                 drift_x = drift_u + cfg_scale * (drift_x - drift_u)
-                drift_cls = drift_cls_u + cls_cfg_scale * (drift_cls - drift_cls_u)
+                if cls_cfg_scale > 0:
+                    drift_cls = drift_cls_u + cls_cfg_scale * (drift_cls - drift_cls_u)
             dt = t_next - t_cur
             x = x + drift_x * dt
             cls = cls + drift_cls * dt
