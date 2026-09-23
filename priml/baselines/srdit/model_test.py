@@ -9,7 +9,8 @@ from priml.baselines.srdit.objective import SpeedrunObjective
 from priml.baselines.srdit.optimizers import srdit_optimizer
 from priml.baselines.srdit.sampling import sample_latents
 from priml.math.diffusion.time_shift import time_shift
-from priml.model.attention.image_rope import ImageRoPE
+from priml.math.position_embedding import image_token_positions
+from priml.model.attention.rope import RoPE
 from priml.optimizers.muon import Muon
 
 
@@ -32,15 +33,30 @@ def tiny_model() -> SpeedrunDiT:
 
 
 def test_rope_leaves_cls_untouched_and_uses_original_positions() -> None:
-    rope = ImageRoPE.Config(head_dim=8, grid_size=4).make()
-    x = torch.randn(2, 4, 3, 8)
-    ids = torch.tensor([[-1, 5, 2], [-1, 6, 1]])
-    rotated = rope(x, ids)
-    assert torch.equal(rotated[:, :, 0], x[:, :, 0])
-    assert not torch.equal(rotated[:, :, 1], x[:, :, 1])
-    assert torch.allclose(
-        rotated[0, :, 1], rope(x[0:1, :, 1:2], ids[0:1, 1:2])[0, :, 0]
+    rope = RoPE.Config(channels_head=(4, 4)).make()
+    positions = image_token_positions(4, torch.device("cpu")).expand(2, -1, -1)
+    kept = torch.tensor([[0, 6, 3], [0, 7, 2]])
+    selected = positions.gather(1, kept[..., None].expand(-1, -1, 2))
+    assert selected[0].tolist() == [[0, 0], [1, 1], [0, 2]]
+    x = torch.randn(2, 3, 4, 8)
+    full_cos, full_sin = rope(image_token_positions(4, torch.device("cpu")))
+    cos, sin = (
+        factor.expand(2, -1, -1, -1).gather(
+            1, kept[:, :, None, None].expand(-1, -1, 1, factor.shape[-1])
+        )
+        for factor in (full_cos, full_sin)
     )
+    expected_cos, expected_sin = rope(selected)
+    assert torch.equal(cos, expected_cos)
+    assert torch.equal(sin, expected_sin)
+    rotated, _ = RoPE.rotate(x, x, cos, sin, interleave=True)
+    assert torch.equal(rotated[:, 0], x[:, 0])
+    assert not torch.equal(rotated[:, 1], x[:, 1])
+    single_cos, single_sin = rope(selected[0:1, 1:2])
+    single, _ = RoPE.rotate(
+        x[0:1, 1:2], x[0:1, 1:2], single_cos, single_sin, interleave=True
+    )
+    assert torch.equal(rotated[0:1, 1:2], single)
 
 
 def test_training_routing_alignment_and_backward() -> None:

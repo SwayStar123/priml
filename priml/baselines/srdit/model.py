@@ -15,8 +15,8 @@ from torch import Tensor, nn
 import torch
 
 from priml.math.diffusion.conditioning import modulate
-from priml.math.position_embedding import sinusoidal_positions
-from priml.model.attention.image_rope import ImageRoPE
+from priml.math.position_embedding import image_token_positions, sinusoidal_positions
+from priml.model.attention.rope import RoPE
 from priml.model.attention.value_residual import ValueResidualAttention
 from priml.model.conditioning import ClassEmbedder, TimestepEmbedder
 from priml.model.token_routing import SparseDenseFusion, select_tokens
@@ -57,15 +57,12 @@ class SiTBlock(nn.Module):
         self,
         x: Tensor,
         condition: Tensor,
-        rope: ImageRoPE,
-        token_ids: Tensor,
+        rope_factors: tuple[Tensor, Tensor],
         v1: Tensor | None,
     ) -> tuple[Tensor, Tensor]:
         """Apply attention and feedforward updates under adaLN conditioning."""
         s1, a1, g1, s2, a2, g2 = self.adaLN_modulation(condition).chunk(6, dim=-1)
-        attention, raw_v = self.attn(
-            modulate(self.norm1(x), s1, a1), rope, token_ids, v1
-        )
+        attention, raw_v = self.attn(modulate(self.norm1(x), s1, a1), rope_factors, v1)
         x = x + g1[:, None] * attention
         x = x + g2[:, None] * self.mlp(modulate(self.norm2(x), s2, a2))
         return x, raw_v
@@ -176,10 +173,8 @@ class SpeedrunDiT(nn.Module):
             sinusoidal_positions(self.grid_size, config.hidden_size),
             persistent=True,
         )
-        self.rope = ImageRoPE.Config(
-            head_dim=config.hidden_size // config.num_heads,
-            grid_size=self.grid_size,
-        ).make()
+        axis_channels = config.hidden_size // config.num_heads // 2
+        self.rope = RoPE.Config(channels_head=(axis_channels, axis_channels)).make()
         ratios = [
             config.mlp_ratio_min
             + (config.mlp_ratio_max - config.mlp_ratio_min)
@@ -271,15 +266,14 @@ class SpeedrunDiT(nn.Module):
         spatial = self.x_embedder(x).flatten(2).transpose(1, 2)
         cls = self.wg_norm(self.cls_projector(cls_token))[:, None]
         x = torch.cat((cls, spatial), dim=1) + self.pos_embed.to(spatial.dtype)
-        ids = torch.arange(self.grid_size**2, device=x.device)[None].expand(batch, -1)
-        full_ids = torch.cat((torch.full((batch, 1), -1, device=x.device), ids), dim=1)
+        rope_factors = self.rope(image_token_positions(self.grid_size, x.device))
         condition = self.t_embedder(t) + self.y_embedder(
             y, force_drop=force_drop_labels
         )
         projections: list[Projection] = []
         first_v: Tensor | None = None
         for i in range(cfg.encoder_blocks):
-            x, raw_v = self.blocks[i](x, condition, self.rope, full_ids, first_v)
+            x, raw_v = self.blocks[i](x, condition, rope_factors, first_v)
             if first_v is None:
                 first_v = raw_v
             self._project(x, i + 1, None, projections)
@@ -289,7 +283,19 @@ class SpeedrunDiT(nn.Module):
         sparse, kept = (
             select_tokens(dense, cfg.drop_ratio) if route_tokens else (dense, None)
         )
-        sparse_ids = full_ids.gather(1, kept) if kept is not None else full_ids
+        if kept is None:
+            sparse_rope_factors = rope_factors
+        else:
+
+            def select_factor(factor: Tensor) -> Tensor:
+                return factor.expand(batch, -1, -1, -1).gather(
+                    1, kept[:, :, None, None].expand(-1, -1, 1, factor.shape[-1])
+                )
+
+            sparse_rope_factors = (
+                select_factor(rope_factors[0]),
+                select_factor(rope_factors[1]),
+            )
         sparse_v = (
             first_v.gather(
                 2,
@@ -302,9 +308,7 @@ class SpeedrunDiT(nn.Module):
         )
         middle_end = cfg.depth - cfg.decoder_blocks
         for i in range(cfg.encoder_blocks, middle_end):
-            sparse, _ = self.blocks[i](
-                sparse, condition, self.rope, sparse_ids, sparse_v
-            )
+            sparse, _ = self.blocks[i](sparse, condition, sparse_rope_factors, sparse_v)
             self._project(sparse, i + 1, kept, projections)
         if self.training and cfg.path_drop_prob:
             coin = torch.rand((), device=x.device)
@@ -313,7 +317,7 @@ class SpeedrunDiT(nn.Module):
             drop_sparse_path = drop_sparse_path or bool(coin < cfg.path_drop_prob)
         x = self.fusion(dense, sparse, kept, drop_path=drop_sparse_path)
         for i in range(middle_end, cfg.depth):
-            x, _ = self.blocks[i](x, condition, self.rope, full_ids, first_v)
+            x, _ = self.blocks[i](x, condition, rope_factors, first_v)
             self._project(x, i + 1, None, projections)
         patches, cls_velocity = self.final_layer(x, condition)
         p = cfg.patch_size

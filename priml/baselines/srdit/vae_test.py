@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 from torch import nn
 
@@ -35,3 +36,22 @@ def test_load_invae_from_local_checkpoint(
     assert loaded.bias is not None
     assert source.bias is not None
     assert torch.equal(loaded.bias, source.bias)
+
+
+def test_invae_image_and_latent_conversions() -> None:
+    """Keep uint8 normalization and the model latent scale together."""
+
+    class FakeVAE:
+        def encode(self, image: torch.Tensor) -> SimpleNamespace:
+            return SimpleNamespace(sample=lambda: image)
+
+        def decode(self, latents: torch.Tensor) -> SimpleNamespace:
+            return SimpleNamespace(sample=latents)
+
+    vae = cast(invae.AutoencoderKL, FakeVAE())
+    image = torch.tensor([0, 255], dtype=torch.uint8)
+    assert torch.equal(invae.encode_image(vae, image), torch.tensor([-1.0, 1.0]))
+    latents = torch.tensor([-1.0, 0.0, 1.0]) * invae.LATENT_SCALE
+    assert torch.allclose(
+        invae.decode_latents(vae, latents), torch.tensor([0.0, 0.5, 1.0])
+    )

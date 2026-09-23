@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from configgle import Fig
 from torch import Tensor, nn
 from torch.nn import functional
 
 import torch
 
-
-if TYPE_CHECKING:
-    from priml.model.attention.image_rope import ImageRoPE
+from priml.model.attention.rope import RoPE
 
 
 class ValueResidualAttention(nn.Module):
@@ -46,7 +42,10 @@ class ValueResidualAttention(nn.Module):
         )
 
     def forward(
-        self, x: Tensor, rope: ImageRoPE, token_ids: Tensor, v1: Tensor | None
+        self,
+        x: Tensor,
+        rope_factors: tuple[Tensor, Tensor],
+        v1: Tensor | None,
     ) -> tuple[Tensor, Tensor]:
         """Attend to image tokens and return the raw value stream for reuse."""
         batch, tokens, channels = x.shape
@@ -59,7 +58,14 @@ class ValueResidualAttention(nn.Module):
         raw_v = v
         if v1 is not None and self.v1_lambda is not None:
             v = self.v1_lambda * v1 + (1 - self.v1_lambda) * v
-        q = rope(self.q_norm(q), token_ids)
-        k = rope(self.k_norm(k), token_ids)
+        cos, sin = rope_factors
+        q, k = RoPE.rotate(
+            self.q_norm(q).transpose(1, 2),
+            self.k_norm(k).transpose(1, 2),
+            cos,
+            sin,
+            interleave=True,
+        )
+        q, k = q.transpose(1, 2), k.transpose(1, 2)
         output = functional.scaled_dot_product_attention(q, k, v)
         return self.proj(output.transpose(1, 2).reshape(batch, tokens, channels)), raw_v

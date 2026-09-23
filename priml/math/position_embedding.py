@@ -7,6 +7,13 @@ from torch import Tensor
 import torch
 
 
+def image_token_positions(grid_size: int, device: torch.device) -> Tensor:
+    """Return axial positions for CLS followed by row-major image tokens."""
+    ids = torch.arange(grid_size**2, device=device)
+    spatial = torch.stack((ids // grid_size, ids % grid_size), dim=-1)
+    return torch.cat((torch.zeros(1, 2, device=device, dtype=ids.dtype), spatial))[None]
+
+
 def sinusoidal_positions(grid_size: int, channels: int) -> Tensor:
     """Build a fixed 2D sine/cosine table with a zero CLS position."""
     if channels % 4:

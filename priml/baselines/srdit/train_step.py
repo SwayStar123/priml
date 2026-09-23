@@ -15,6 +15,7 @@ from priml.baselines.srdit.model import ModelOutput, SpeedrunDiT
 from priml.baselines.srdit.objective import LossTerms, SpeedrunObjective
 from priml.baselines.srdit.optimizers import srdit_optimizer
 from priml.baselines.srdit.teacher import DinoV2Teacher
+from priml.model.third_party.invae import LATENT_SCALE
 from priml.train.custom_types import EMAProtocol
 from priml.train.ema import EMA
 from priml.train.train_step import TrainStep, _assert_uniform_microbatch_count
@@ -52,7 +53,7 @@ class SpeedrunTrainStep(TrainStep):
         """Exponential moving average of student parameters."""
         gradient_clip_norm: float = 1.0
         """Global gradient norm clipping threshold."""
-        latent_scale: float = 0.3099
+        latent_scale: float = LATENT_SCALE
         """Scale applied to sampled INVAE latents."""
         projection_coeff: float = 0.5
         """REG projection loss weight."""

@@ -17,10 +17,9 @@ from PIL import Image
 import numpy as np
 import torch
 
-from priml.baselines.srdit.vae import encode_image
 from priml.data.processors.labels import ImagenetSynsetToIndex
 from priml.data.sources.extracted_imagenet import ExtractedImageNetSource
-from priml.model.third_party.invae import load_invae
+from priml.model.third_party.invae import encode_image, load_invae
 
 
 def center_crop(image: Image.Image, size: int) -> Image.Image:

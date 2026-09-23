@@ -8,7 +8,7 @@ from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 
-from torch import nn
+from torch import Tensor, nn
 
 import numpy as np
 import torch
@@ -507,6 +507,22 @@ vae_models = {
     "f8d4": VAE_F8D4,  # [B, 4, 32, 32]
     "f16d32": VAE_F16D32,  # [B, 32, 16, 16]
 }
+
+
+LATENT_SCALE = 0.3099
+"""Scale used for the 32-channel INVAE latents in SpeedrunDiT."""
+
+
+@torch.no_grad()
+def encode_image(vae: AutoencoderKL, image: Tensor) -> Tensor:
+    """Sample unscaled INVAE latents from uint8 NCHW images."""
+    return vae.encode(image.float() / 127.5 - 1).sample()
+
+
+@torch.no_grad()
+def decode_latents(vae: AutoencoderKL, latents: Tensor) -> Tensor:
+    """Decode scaled model latents to float RGB in [0, 1]."""
+    return ((vae.decode(latents / LATENT_SCALE).sample + 1) / 2).clamp(0, 1)
 
 
 def load_invae(
