@@ -11,74 +11,15 @@ from typing import NamedTuple
 
 from configgle import Fig
 from torch import Tensor, nn
-from torch.nn import functional
 
 import torch
 
-from priml.baselines.srdit.conditioning import ClassEmbedder, TimestepEmbedder
-from priml.baselines.srdit.rope import ImageRoPE
-from priml.baselines.srdit.routing import SparseDenseFusion, select_tokens
-
-
-def modulate(x: Tensor, shift: Tensor, scale: Tensor) -> Tensor:
-    """Apply per-example adaLN shift and scale to every token."""
-    return x * (1 + scale[:, None]) + shift[:, None]
-
-
-def sinusoidal_positions(grid_size: int, channels: int) -> Tensor:
-    """Build a fixed 2D sine/cosine table with a zero CLS position."""
-    if channels % 4:
-        raise ValueError("position channels must be divisible by four")
-    axis_channels = channels // 2
-    omega = 1 / (
-        10_000 ** (torch.arange(axis_channels // 2).float() / (axis_channels // 2))
-    )
-    positions = torch.arange(grid_size, dtype=torch.float32)
-    grid_y, grid_x = torch.meshgrid(positions, positions, indexing="ij")
-
-    def embed(p: Tensor) -> Tensor:
-        angles = p.reshape(-1, 1) * omega[None]
-        return torch.cat((angles.sin(), angles.cos()), dim=-1)
-
-    spatial = torch.cat((embed(grid_x), embed(grid_y)), dim=-1)
-    return torch.cat((torch.zeros(1, channels), spatial), dim=0).unsqueeze(0)
-
-
-class ValueResidualAttention(nn.Module):
-    """QK normalized attention with 2D RoPE and a first-block value reference."""
-
-    def __init__(
-        self, channels: int, heads: int, *, qk_norm: bool, value_residual: bool
-    ) -> None:
-        super().__init__()
-        if channels % heads:
-            raise ValueError("channels must be divisible by heads")
-        self.heads = heads
-        self.head_dim = channels // heads
-        self.qkv = nn.Linear(channels, 3 * channels)
-        self.q_norm = nn.RMSNorm(self.head_dim) if qk_norm else nn.Identity()
-        self.k_norm = nn.RMSNorm(self.head_dim) if qk_norm else nn.Identity()
-        self.proj = nn.Linear(channels, channels)
-        self.v1_lambda = nn.Parameter(torch.tensor(0.5)) if value_residual else None
-
-    def forward(
-        self, x: Tensor, rope: ImageRoPE, token_ids: Tensor, v1: Tensor | None
-    ) -> tuple[Tensor, Tensor]:
-        """Attend to image tokens and return the raw value stream for reuse."""
-        batch, tokens, channels = x.shape
-        q, k, v = (
-            self.qkv(x)
-            .reshape(batch, tokens, 3, self.heads, self.head_dim)
-            .permute(2, 0, 3, 1, 4)
-            .unbind(0)
-        )
-        raw_v = v
-        if v1 is not None and self.v1_lambda is not None:
-            v = self.v1_lambda * v1 + (1 - self.v1_lambda) * v
-        q = rope(self.q_norm(q), token_ids)
-        k = rope(self.k_norm(k), token_ids)
-        output = functional.scaled_dot_product_attention(q, k, v)
-        return self.proj(output.transpose(1, 2).reshape(batch, tokens, channels)), raw_v
+from priml.math.diffusion.conditioning import modulate
+from priml.math.position_embedding import sinusoidal_positions
+from priml.model.attention.image_rope import ImageRoPE
+from priml.model.attention.value_residual import ValueResidualAttention
+from priml.model.conditioning import ClassEmbedder, TimestepEmbedder
+from priml.model.token_routing import SparseDenseFusion, select_tokens
 
 
 class SiTBlock(nn.Module):
@@ -95,9 +36,12 @@ class SiTBlock(nn.Module):
     ) -> None:
         super().__init__()
         self.norm1 = nn.RMSNorm(channels, eps=1e-6, elementwise_affine=False)
-        self.attn = ValueResidualAttention(
-            channels, heads, qk_norm=qk_norm, value_residual=value_residual
-        )
+        self.attn = ValueResidualAttention.Config(
+            channels=channels,
+            heads=heads,
+            qk_norm=qk_norm,
+            value_residual=value_residual,
+        ).make()
         self.norm2 = nn.RMSNorm(channels, eps=1e-6, elementwise_affine=False)
         hidden = int(channels * mlp_ratio)
         self.mlp = nn.Sequential(
@@ -219,10 +163,12 @@ class SpeedrunDiT(nn.Module):
         self.x_embedder = nn.Conv2d(
             config.in_channels, config.hidden_size, config.patch_size, config.patch_size
         )
-        self.t_embedder = TimestepEmbedder(config.hidden_size)
-        self.y_embedder = ClassEmbedder(
-            config.num_classes, config.hidden_size, config.class_dropout_prob
-        )
+        self.t_embedder = TimestepEmbedder.Config(channels=config.hidden_size).make()
+        self.y_embedder = ClassEmbedder.Config(
+            num_classes=config.num_classes,
+            channels=config.hidden_size,
+            dropout=config.class_dropout_prob,
+        ).make()
         self.cls_projector = nn.Linear(config.cls_channels, config.hidden_size)
         self.wg_norm = nn.RMSNorm(config.hidden_size, eps=1e-6)
         self.register_buffer(
@@ -230,7 +176,10 @@ class SpeedrunDiT(nn.Module):
             sinusoidal_positions(self.grid_size, config.hidden_size),
             persistent=True,
         )
-        self.rope = ImageRoPE(config.hidden_size // config.num_heads, self.grid_size)
+        self.rope = ImageRoPE.Config(
+            head_dim=config.hidden_size // config.num_heads,
+            grid_size=self.grid_size,
+        ).make()
         ratios = [
             config.mlp_ratio_min
             + (config.mlp_ratio_max - config.mlp_ratio_min)
@@ -248,7 +197,7 @@ class SpeedrunDiT(nn.Module):
             )
             for i, ratio in enumerate(ratios)
         )
-        self.fusion = SparseDenseFusion(config.hidden_size)
+        self.fusion = SparseDenseFusion.Config(channels=config.hidden_size).make()
         self.projector = nn.Sequential(
             nn.Linear(config.hidden_size, config.projector_hidden),
             nn.SiLU(),

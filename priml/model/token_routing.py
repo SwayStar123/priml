@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from configgle import Fig
 from torch import Tensor, nn
 
 import torch
@@ -21,10 +22,14 @@ def select_tokens(x: Tensor, drop_ratio: float) -> tuple[Tensor, Tensor | None]:
 class SparseDenseFusion(nn.Module):
     """Pad routed tokens with a trainable mask, then fuse with the dense path."""
 
-    def __init__(self, channels: int) -> None:
+    class Config(Fig["SparseDenseFusion"]):
+        channels: int = -1
+        """Token width shared by dense and sparse streams."""
+
+    def __init__(self, config: Config) -> None:
         super().__init__()
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, channels))
-        self.proj = nn.Linear(2 * channels, channels)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, config.channels))
+        self.proj = nn.Linear(2 * config.channels, config.channels)
 
     def forward(
         self,

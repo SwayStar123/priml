@@ -4,6 +4,8 @@ MIT license and attribution: ``priml/model/third_party/IN-VAE-LICENSE``.
 Reference: https://github.com/SwayStar123/REG/blob/invae-sprint-rms-rope-valres-cfm-muon-layerwisescaling/models/invae.py
 """
 
+from importlib import import_module
+from pathlib import Path
 from types import SimpleNamespace
 
 from torch import nn
@@ -505,3 +507,24 @@ vae_models = {
     "f8d4": VAE_F8D4,  # [B, 4, 32, 32]
     "f16d32": VAE_F16D32,  # [B, 32, 16, 16]
 }
+
+
+def load_invae(
+    checkpoint: Path | str | None = None, *, device: torch.device | str = "cpu"
+) -> AutoencoderKL:
+    """Load the 32-channel INVAE from a local or REPA-E checkpoint."""
+    if checkpoint is None:
+        try:
+            hub = import_module("huggingface_hub")
+        except ImportError as error:
+            raise ImportError(
+                "Install priml[hub] or pass a local INVAE checkpoint path"
+            ) from error
+        checkpoint = hub.hf_hub_download(
+            repo_id="REPA-E/e2e-invae", filename="e2e-invae-400k.pt"
+        )
+    assert checkpoint is not None
+    vae = VAE_F16D32()
+    state = torch.load(Path(checkpoint), map_location="cpu", weights_only=True)
+    vae.load_state_dict(state)
+    return vae.to(device).eval().requires_grad_(False)

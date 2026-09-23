@@ -33,8 +33,8 @@ def exp000() -> SpeedrunTrainLoop:
     """400k-step SiT-B/1 with REG, SPRINT, CFM, time shift, and Muon.
 
     Hypothesis:
-      The branch's model, objective, data order, and optimizer arithmetic
-      reproduce its published training recipe inside priml.
+      The branch's model, objective, data order, and optimizer settings
+      reproduce its training recipe with priml's shared Muon.
 
     References:
       https://github.com/SwayStar123/REG/tree/invae-sprint-rms-rope-valres-cfm-muon-layerwisescaling

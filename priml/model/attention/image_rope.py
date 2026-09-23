@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from configgle import Fig
 from torch import Tensor, nn
 
 import torch
@@ -15,20 +16,32 @@ def _rotate_pairs(x: Tensor) -> Tensor:
 class ImageRoPE(nn.Module):
     """EVA-style axial RoPE; token index -1 denotes an unrotated CLS token."""
 
-    def __init__(self, head_dim: int, grid_size: int, theta: float = 10_000.0) -> None:
+    class Config(Fig["ImageRoPE"]):
+        head_dim: int = -1
+        """Channels in each attention head."""
+
+        grid_size: int = -1
+        """Side length of the square image-token grid."""
+
+        theta: float = 10_000.0
+        """Frequency base for each spatial axis."""
+
+    def __init__(self, config: Config) -> None:
         super().__init__()
-        if head_dim % 4:
+        if config.head_dim % 4:
             raise ValueError("head_dim must be divisible by four for 2D RoPE")
-        if grid_size < 1:
+        if config.grid_size < 1:
             raise ValueError("grid_size must be positive")
-        self.grid_size = grid_size
-        axis_dim = head_dim // 2
-        frequencies = theta ** (-torch.arange(0, axis_dim, 2).float() / axis_dim)
-        positions = torch.arange(grid_size, dtype=torch.float32)
+        self.grid_size = config.grid_size
+        axis_dim = config.head_dim // 2
+        frequencies = config.theta ** (-torch.arange(0, axis_dim, 2).float() / axis_dim)
+        positions = torch.arange(config.grid_size, dtype=torch.float32)
         angles = torch.repeat_interleave(positions[:, None] * frequencies, 2, dim=-1)
-        row = angles[:, None, :].expand(grid_size, grid_size, axis_dim)
-        col = angles[None, :, :].expand(grid_size, grid_size, axis_dim)
-        two_d = torch.cat((row, col), dim=-1).reshape(grid_size**2, head_dim)
+        row = angles[:, None, :].expand(config.grid_size, config.grid_size, axis_dim)
+        col = angles[None, :, :].expand(config.grid_size, config.grid_size, axis_dim)
+        two_d = torch.cat((row, col), dim=-1).reshape(
+            config.grid_size**2, config.head_dim
+        )
         self.register_buffer("cos", two_d.cos(), persistent=False)
         self.register_buffer("sin", two_d.sin(), persistent=False)
 

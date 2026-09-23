@@ -7,9 +7,10 @@ import torch
 from priml.baselines.srdit.model import SpeedrunDiT
 from priml.baselines.srdit.objective import SpeedrunObjective
 from priml.baselines.srdit.optimizers import srdit_optimizer
-from priml.baselines.srdit.rope import ImageRoPE
 from priml.baselines.srdit.sampling import sample_latents
 from priml.math.diffusion.time_shift import time_shift
+from priml.model.attention.image_rope import ImageRoPE
+from priml.optimizers.muon import Muon
 
 
 def tiny_model() -> SpeedrunDiT:
@@ -31,7 +32,7 @@ def tiny_model() -> SpeedrunDiT:
 
 
 def test_rope_leaves_cls_untouched_and_uses_original_positions() -> None:
-    rope = ImageRoPE(head_dim=8, grid_size=4)
+    rope = ImageRoPE.Config(head_dim=8, grid_size=4).make()
     x = torch.randn(2, 4, 3, 8)
     ids = torch.tensor([[-1, 5, 2], [-1, 6, 1]])
     rotated = rope(x, ids)
@@ -66,6 +67,7 @@ def test_optimizer_partitions_hidden_matrices_from_heads() -> None:
     optimizer = srdit_optimizer().make()(model)
     assert len(optimizer.optimizers) == 2
     adam, muon = optimizer.optimizers
+    assert isinstance(muon, Muon)
     assert any(
         p is model.final_layer.linear.weight for p in adam.param_groups[0]["params"]
     )

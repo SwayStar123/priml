@@ -28,12 +28,16 @@ SpeedrunTrainLoop(
                 │       optimizer=CompositeOptimizer.Config(
                 │               optimizers=[
                 │                       PartialConfig(<class 'functools.partial'>, <class 'torch.optim.adamw.AdamW'>, lr=0.0001, betas=(0.9, 0.999), weight_decay=0.0, eps=1e-15),
-                │                       SrditMuon.Config(
+                │                       Muon.Config(
                 │                               lr=0.001,
-                │                               momentum=0.95,
                 │                               weight_decay=0.0,
+                │                               momentum=0.95,
                 │                               nesterov=True,
-                │                               ns_steps=5
+                │                               ns_coefficients=(3.4445, -4.775, 2.0315),
+                │                               eps=1e-07,
+                │                               ns_steps=5,
+                │                               adjust_lr_fn=<function priml.optimizers.muon.adjust_lr_original at 0xdefacedeface>,
+                │                               ensemble_dims=0
                 │                       )
                 │               ],
                 │               select=[
