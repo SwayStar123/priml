@@ -6,17 +6,16 @@ from dataclasses import field
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, cast, override
 
-import json
 import re
 
 from configgle import Fig, Makeable
-from PIL import Image
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, DistributedSampler
 
 import numpy as np
 import torch
 
+from priml.baselines.speedrundit.data import read_image, read_labels
 from priml.paths import resolve_working_dir
 from priml.timer import CheckpointableStepTimer
 
@@ -51,8 +50,7 @@ class PairedImageLatentDataset(Dataset[dict[str, Tensor]]):
         root = Path(config.working_dir)
         image_root = root / "images"
         latent_root = root / "vae-in"
-        with (latent_root / "dataset.json").open(encoding="utf-8") as stream:
-            labels = dict(json.load(stream)["labels"])
+        labels = read_labels(latent_root / "dataset.json")
         images = {
             _pair_key(path.relative_to(image_root)): path
             for path in image_root.rglob("*")
@@ -78,13 +76,7 @@ class PairedImageLatentDataset(Dataset[dict[str, Tensor]]):
 
     def __getitem__(self, index: int) -> dict[str, Tensor]:
         image_path, latent_path, label = self.records[index]
-        if image_path.suffix.lower() == ".npy":
-            image = np.load(image_path)
-            image = image.reshape(-1, *image.shape[-2:])
-        else:
-            with Image.open(image_path) as decoded:
-                pixels = np.array(decoded)
-            image = pixels.reshape(*pixels.shape[:2], -1).transpose(2, 0, 1)
+        image = read_image(image_path)
         latent = np.load(latent_path)
         if latent.ndim == 4 and latent.shape[0] == 1:
             latent = latent[0]

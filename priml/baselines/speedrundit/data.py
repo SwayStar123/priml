@@ -79,6 +79,7 @@ __all__ = [
     "SpeedrunDiTData",
     "center_crop_dhariwal",
     "imagenet_image_pipeline",
+    "read_image",
     "read_labels",
     "relative_names",
 ]
@@ -612,7 +613,7 @@ def _load_corpus(
     images = None
     if keep_images and image_names:
         images = torch.from_numpy(
-            np.stack([_read_image(images_dir / name) for name in image_names]),
+            np.stack([read_image(images_dir / name) for name in image_names]),
         ).to(device=device)
 
     count = media.shape[0]
@@ -639,7 +640,7 @@ def _load_corpus(
     )
 
 
-def _read_image(path: Path) -> NDArray[np.uint8]:
+def read_image(path: Path) -> NDArray[np.uint8]:
     """Decode one stored image to ``[channels, height, width]`` uint8."""
     if path.suffix.lower() == ".npy":
         array = cast("NDArray[np.uint8]", np.load(path))

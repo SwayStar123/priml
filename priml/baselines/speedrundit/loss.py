@@ -43,6 +43,7 @@ from torch import Tensor
 import torch
 
 from priml.cost import Cost, elementwise_cost, map_cost, reduction_cost, set_cost
+from priml.loss.contrastive_flow import contrastive_flow_loss
 from priml.math.custom_types import TensorFn
 from priml.math.diffusion import (
     compute_log_alpha,
@@ -527,11 +528,10 @@ class SpeedrunDiTLoss:
         # two spatial axes before it meets the class token.
         weight = self.cfm_weight(time)
         cls_weight = weight if weight.ndim == 0 else weight.squeeze(-1).squeeze(-1)
-        cfm_error = (output.velocity - torch.roll(media_target, 1, 0)) ** 2
-        cfm = -(cfm_error * weight).mean()
-        cfm_cls = -(
-            ((output.cls_velocity - torch.roll(cls_target, 1, 0)) ** 2) * cls_weight
-        ).mean()
+        cfm = contrastive_flow_loss(output.velocity, media_target, weight=weight)
+        cfm_cls = contrastive_flow_loss(
+            output.cls_velocity, cls_target, weight=cls_weight
+        )
 
         cfg = self.config
         total = (

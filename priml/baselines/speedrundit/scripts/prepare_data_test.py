@@ -12,7 +12,9 @@ import json
 
 from PIL import Image
 
+import numpy as np
 import pytest
+import torch
 
 from priml.baselines.speedrundit.data import SpeedrunDiTData, read_labels
 from priml.baselines.speedrundit.scripts import prepare_data
@@ -79,6 +81,33 @@ def test_synthetic_is_reproducible(tmp_path: Path) -> None:
     left = (first / "vae-in" / "00000" / "img-latents-00000000.npy").read_bytes()
     right = (second / "vae-in" / "00000" / "img-latents-00000000.npy").read_bytes()
     assert left == right
+
+
+def test_encode_invae_reuses_prepared_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second pass keeps the first pass's order, names, and labels."""
+    images = tmp_path / "images" / "00000"
+    images.mkdir(parents=True)
+    Image.new("RGB", (4, 4), (17, 0, 0)).save(images / "img00000000.png")
+    (tmp_path / "images" / "dataset.json").write_text(
+        json.dumps({"labels": [["00000/img00000000.png", 7]]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(prepare_data, "load_invae", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        prepare_data, "encode_image", lambda _vae, image: image[:, :1].float()
+    )
+
+    assert prepare_data.encode_invae(tmp_path, device="cpu") == 1
+    latent = tmp_path / "vae-in" / "00000" / "img-latents-00000000.npy"
+    assert torch.equal(
+        torch.from_numpy(np.load(latent)), torch.full((1, 1, 4, 4), 17.0)
+    )
+    assert read_labels(tmp_path / "vae-in" / "dataset.json") == {
+        "00000/img-latents-00000000.npy": 7
+    }
+    with pytest.raises(FileExistsError):
+        prepare_data.encode_invae(tmp_path, device="cpu")
 
 
 def test_an_occupied_destination_is_untouched(tmp_path: Path) -> None:

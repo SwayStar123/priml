@@ -105,10 +105,12 @@ numerically from that branch, so the `exp000` bit-for-bit claim does not apply
 to `exp001`.
 
 `exp001` reads paired images and sampled INVAE latents from
-`/opt/scratch/datasets/srdit`. Prepare them from extracted ImageNet:
+`/opt/scratch/datasets/srdit`. The existing preparer writes the images, then
+encodes the latents:
 
 ```bash
-uv --quiet run --frozen python -m priml.baselines.srdit.scripts.prepare_data --source /datasets/imagenet --output /opt/scratch/datasets/srdit
+uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --convert --imagenet /datasets/imagenet --directory /opt/scratch/datasets/srdit
+uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --encode-invae --directory /opt/scratch/datasets/srdit
 ```
 
 The preparer downloads the INVAE checkpoint from REPA-E when `--checkpoint`

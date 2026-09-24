@@ -140,7 +140,11 @@ class SpeedrunObjective:
         cfm = contrastive_flow_loss(
             output.velocity,
             target,
-            time=time if self.cfm_weighting == "linear" else None,
+            weight=(
+                time.reshape(-1, *([1] * (target.ndim - 1)))
+                if self.cfm_weighting == "linear"
+                else None
+            ),
         )
         mean_loss = (
             velocity.mean()

@@ -25,7 +25,7 @@ References:
 from __future__ import annotations
 
 from dataclasses import KW_ONLY, field
-from typing import NamedTuple, Protocol, Self, cast, override
+from typing import NamedTuple, Self, cast, override
 
 import math
 
@@ -46,6 +46,7 @@ from priml.cost import (
 from priml.math.custom_types import TensorFn
 from priml.math.diffusion.conditioning import modulate, timestep_embedding
 from priml.model.attention.kernel import SdpaFused
+from priml.model.attention.value_residual import ValueBlend, ValueResidual
 from priml.model.custom_types import (
     ActivationFn,
     AttentionKernel,
@@ -663,86 +664,6 @@ def _activation(activation: ActivationFn) -> TensorFn:
         # parameter: ``make`` reads as returning ``object`` without the cast.
         return cast(TensorFn, activation.make())
     return activation
-
-
-class ValueBlend(Protocol):
-    """Blends one layer's attention values with the first layer's."""
-
-    def __call__(self, v: Tensor, first: Tensor, /) -> Tensor:
-        """Apply to the input."""
-        ...
-
-
-class ValueResidual(nn.Module):
-    """Blend a layer's values toward the first layer's, by a learned scalar.
-
-    References:
-      https://arxiv.org/abs/2410.17897
-        Zhou et al. 2024, "Value Residual Learning For Alleviating Attention
-        Concentration In Transformers."
-
-    """
-
-    class Config(Fig["ValueResidual"], kw_only=False):
-        """Configuration for ValueResidual."""
-
-        initial: float = 0.5
-        """Starting mixing weight on the first layer's values."""
-
-        def cost(
-            self,
-            *,
-            seq_len: int,
-            batch_size: int,
-            heads: int,
-            channels_head: int,
-            dtype: torch.dtype | None,
-            **kwargs: object,
-        ) -> Cost:
-            """Cost one value blend.
-
-            Args:
-              seq_len: Tokens per sequence.
-              batch_size: Sequences per step.
-              heads: Attention heads.
-              channels_head: Width of one head.
-              dtype: Activation dtype; ``None`` is torch's default.
-              **kwargs: The open bus, unread here.
-
-            Returns:
-              cost: Whole-invocation cost of this module.
-
-            """
-            del kwargs
-            return elementwise_cost(
-                primal=3,
-                adjoint=4,
-                channels=channels_head,
-                rows=seq_len * batch_size * heads,
-                dtype=dtype,
-                inputs=2,
-                params=1,
-            )
-
-    def __init__(self, config: Config) -> None:
-        super().__init__()
-        self.weight = nn.Parameter(torch.tensor(config.initial))
-
-    @override
-    def forward(self, v: Tensor, first: Tensor, **kwargs: object) -> Tensor:
-        """Blend values toward the first layer's.
-
-        Args:
-          v: This layer's values, ``[batch, heads, tokens, channels_head]``.
-          first: First layer's values, same shape.
-          **kwargs: The open bus, unread here.
-
-        Returns:
-          blended: ``weight * first + (1 - weight) * v``.
-
-        """
-        del kwargs
-        return self.weight * first + (1.0 - self.weight) * v
 
 
 class VisionRoPE(nn.Module):
