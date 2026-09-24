@@ -45,6 +45,7 @@ from priml.cost import (
 )
 from priml.math.custom_types import TensorFn
 from priml.math.diffusion.conditioning import modulate, timestep_embedding
+from priml.math.position_embedding import sincos_position_table
 from priml.model.attention.kernel import SdpaFused
 from priml.model.attention.value_residual import ValueBlend, ValueResidual
 from priml.model.custom_types import (
@@ -55,6 +56,7 @@ from priml.model.custom_types import (
     propagate_attr,
 )
 from priml.model.norm import RMSNorm
+from priml.model.token_routing import select_tokens
 
 
 __all__ = [
@@ -94,50 +96,6 @@ def gelu_tanh(x: Tensor) -> Tensor:
 
     """
     return nn.functional.gelu(x, approximate="tanh")
-
-
-def sincos_position_table(channels: int, grid: int, *, lead: int = 1) -> Tensor:
-    """Build the frozen 2D sin-cos position table, with zeroed lead rows.
-
-    Computed in float64 and rounded once to float32, which is what the
-    reference does by building it in NumPy; the intermediate width is visible
-    here rather than implied by a dtype three call frames away.
-
-    Note the ordering differs from :func:`TimestepEmbedder.frequencies`: this
-    table concatenates ``sin`` then ``cos``, the timestep embedding ``cos`` then
-    ``sin``. They are not interchangeable and must not be unified.
-
-    Args:
-      channels: Embedding width; must be divisible by four.
-      grid: Side length of the square patch grid.
-      lead: Leading rows zeroed for non-spatial tokens (the class token).
-
-    Returns:
-      table: ``[lead + grid * grid, channels]`` float32 positions.
-
-    Raises:
-      ValueError: If ``channels`` is not divisible by four.
-
-    """
-    if channels % 4:
-        raise ValueError(f"channels must be divisible by four; got {channels}.")
-    half = channels // 2
-    omega = torch.arange(half // 2, dtype=torch.float64) / (half / 2.0)
-    omega = 1.0 / 10_000**omega
-    steps = torch.arange(grid, dtype=torch.float64)
-    # meshgrid's width axis varies fastest, so the first half of the channels
-    # encodes the COLUMN and the second half the row. Swapping them still
-    # trains, and silently stops matching a reference checkpoint.
-    cols, rows = torch.meshgrid(steps, steps, indexing="xy")
-    parts = [
-        torch.cat([torch.sin(out), torch.cos(out)], dim=1)
-        for out in (
-            torch.outer(cols.reshape(-1), omega),
-            torch.outer(rows.reshape(-1), omega),
-        )
-    ]
-    table = torch.cat(parts, dim=1)
-    return torch.cat([table.new_zeros(lead, channels), table]).float()
 
 
 class PatchEmbed(nn.Module):
@@ -1377,16 +1335,10 @@ class SprintRouting(nn.Module):
           result: The sparse tokens and the indices kept.
 
         """
-        batch, tokens, channels = x.shape
-        if not self.training or self.drop_ratio <= 0.0 or tokens <= 1:
+        if not self.training or self.drop_ratio <= 0.0:
             return SprintRouting.Result(x, None)
-        num_keep = max(1, int(tokens * (1.0 - self.drop_ratio)))
-        if num_keep >= tokens:
-            return SprintRouting.Result(x, None)
-        noise = torch.rand(batch, tokens, device=x.device)
-        keep = torch.argsort(noise, dim=1)[:, :num_keep]
-        gathered = x.gather(1, keep.unsqueeze(-1).expand(-1, -1, channels))
-        return SprintRouting.Result(gathered, keep)
+        sparse, keep = select_tokens(x, self.drop_ratio)
+        return SprintRouting.Result(sparse, keep)
 
     def scatter(self, sparse: Tensor, keep: Tensor | None, tokens: int) -> Tensor:
         """Refill dropped slots with the mask token.

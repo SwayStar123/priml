@@ -12,9 +12,9 @@ def select_tokens(x: Tensor, drop_ratio: float) -> tuple[Tensor, Tensor | None]:
     """Keep a random subset of tokens and return their original indices."""
     if not 0 <= drop_ratio < 1:
         raise ValueError("drop_ratio must be in [0, 1)")
-    if drop_ratio == 0 or x.shape[1] <= 1:
-        return x, None
     keep = max(1, int(x.shape[1] * (1 - drop_ratio)))
+    if keep >= x.shape[1]:
+        return x, None
     ids = torch.rand(x.shape[:2], device=x.device).argsort(dim=1)[:, :keep]
     return x.gather(1, ids[..., None].expand(-1, -1, x.shape[-1])), ids
 

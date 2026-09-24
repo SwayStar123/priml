@@ -6,28 +6,49 @@ from torch import Tensor
 
 import torch
 
+from priml.math.numeric import mesh_arange
+
 
 def image_token_positions(grid_size: int, device: torch.device) -> Tensor:
     """Return axial positions for CLS followed by row-major image tokens."""
-    ids = torch.arange(grid_size**2, device=device)
-    spatial = torch.stack((ids // grid_size, ids % grid_size), dim=-1)
-    return torch.cat((torch.zeros(1, 2, device=device, dtype=ids.dtype), spatial))[None]
+    spatial = mesh_arange((grid_size, grid_size), device=device)
+    return torch.cat((spatial.new_zeros(1, 2), spatial))[None]
 
 
 def sinusoidal_positions(grid_size: int, channels: int) -> Tensor:
     """Build a fixed 2D sine/cosine table with a zero CLS position."""
+    return sincos_position_table(
+        channels, grid_size, compute_dtype=torch.float32
+    ).unsqueeze(0)
+
+
+def sincos_position_table(
+    channels: int,
+    grid: int,
+    *,
+    lead: int = 1,
+    compute_dtype: torch.dtype = torch.float64,
+) -> Tensor:
+    """Build a 2D sine/cosine table with zeroed leading tokens.
+
+    The original SpeedrunDiT builds the table in NumPy float64 and rounds
+    once to float32. The later REG branch computes it directly in float32.
+    Keeping the intermediate dtype explicit preserves both recipes.
+    """
     if channels % 4:
         raise ValueError("position channels must be divisible by four")
-    axis_channels = channels // 2
-    omega = 1 / (
-        10_000 ** (torch.arange(axis_channels // 2).float() / (axis_channels // 2))
-    )
-    positions = torch.arange(grid_size, dtype=torch.float32)
-    grid_y, grid_x = torch.meshgrid(positions, positions, indexing="ij")
-
-    def embed(p: Tensor) -> Tensor:
-        angles = p.reshape(-1, 1) * omega[None]
-        return torch.cat((angles.sin(), angles.cos()), dim=-1)
-
-    spatial = torch.cat((embed(grid_x), embed(grid_y)), dim=-1)
-    return torch.cat((torch.zeros(1, channels), spatial), dim=0).unsqueeze(0)
+    half = channels // 2
+    omega = torch.arange(half // 2, dtype=compute_dtype) / (half / 2.0)
+    omega = 1.0 / 10_000**omega
+    steps = torch.arange(grid, dtype=compute_dtype)
+    # Width varies fastest; channels encode columns before rows.
+    cols, rows = torch.meshgrid(steps, steps, indexing="xy")
+    parts = [
+        torch.cat([torch.sin(out), torch.cos(out)], dim=1)
+        for out in (
+            torch.outer(cols.reshape(-1), omega),
+            torch.outer(rows.reshape(-1), omega),
+        )
+    ]
+    table = torch.cat(parts, dim=1)
+    return torch.cat([table.new_zeros(lead, channels), table]).float()
