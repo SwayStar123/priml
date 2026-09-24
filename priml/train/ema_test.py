@@ -15,6 +15,7 @@ import pytest
 import torch
 import torch.distributed as dist
 
+from priml.optimizers.parameter_filter import complement, everything, matching
 from priml.testing.fixtures import get_device
 from priml.train.ema import EMA, NoEMA, karras_decay
 
@@ -205,22 +206,17 @@ def test_ema_apply_to_uses_preallocated_backup() -> None:
     )
 
 
-# -- param_filter -------------------------------------------------------------
+# -- select -------------------------------------------------------------------
 
 
-def test_ema_param_filter_excludes_matching_params() -> None:
-    """``param_filter`` returning False excludes the param from the shadow."""
+def test_ema_select_excludes_matching_params() -> None:
+    """``select`` returning False excludes the param from the shadow."""
     model = nn.Sequential(
         nn.Linear(2, 2),  # Named "0"
         nn.Linear(2, 2),  # Named "1"
     )
 
-    def exclude_layer_1(name: str, p: nn.Parameter) -> bool:
-        del p
-        return not name.startswith("1.")
-
-    ema = EMA.Config(decay=0.0).make()
-    ema.set_param_filter(exclude_layer_1)
+    ema = EMA.Config(decay=0.0, select=complement(matching("1."))).make()
     ema(model)
     # Mutate the excluded layer's weights; EMA should not track.
     layer_1_live = model[1]
@@ -232,7 +228,34 @@ def test_ema_param_filter_excludes_matching_params() -> None:
     assert ema.shadow_model is not None
     shadow_weight = dict(ema.shadow_model.named_parameters())["1.weight"]
     diff = (shadow_weight - layer_1_live.weight).abs().max().item()
-    assert diff > 0.0, "param_filter did not exclude layer 1"
+    assert diff > 0.0, "select did not exclude layer 1"
+
+
+# -- everything ---------------------------------------------------------------
+
+
+def test_ema_everything_averages_frozen_parameters() -> None:
+    """``everything`` averages a frozen parameter; the default skips it."""
+    model = nn.Linear(1, 1, bias=False)
+    with torch.no_grad():
+        model.weight.fill_(1.0)
+    model.weight.requires_grad_(False)
+    tracked = EMA.Config(decay=0.5, select=everything).make()
+    skipped = EMA.Config(decay=0.5).make()
+    for ema in (tracked, skipped):
+        ema(model)
+    # Moved by hand: nothing trains a frozen parameter, but a recipe that
+    # averages every ``named_parameter`` still lerps toward its live value.
+    with torch.no_grad():
+        model.weight.fill_(3.0)
+    for ema in (tracked, skipped):
+        ema(model)
+    assert tracked.shadow_model is not None
+    assert skipped.shadow_model is not None
+    averaged = dict(tracked.shadow_model.named_parameters())["weight"]
+    untouched = dict(skipped.shadow_model.named_parameters())["weight"]
+    assert torch.equal(averaged, torch.full_like(model.weight, 2.0))
+    assert torch.equal(untouched, torch.full_like(model.weight, 1.0))
 
 
 # -- state_dict independence (REAL-6 carryover) -------------------------------

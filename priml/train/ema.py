@@ -14,6 +14,8 @@ from torch import Tensor
 
 import torch
 
+from priml.optimizers.parameter_filter import ParameterFilter, trainable
+
 
 if TYPE_CHECKING:
     from torch import nn
@@ -77,9 +79,6 @@ class NoEMA:
         state = cast(NoEMA.StateDict, state_dict)
         self.global_step = state["global_step"]
         self.local_step = state.get("local_step", 0)
-
-
-_ParamFilter = Callable[[str, "nn.Parameter"], bool]
 
 
 type DecaySchedule = Callable[[float, int], float]
@@ -166,9 +165,9 @@ class EMA:
       shadow updated in ``__call__``. The in-place ``apply_to`` swap NEVER
       swaps buffers regardless of ``track_buffers`` -- it targets weight
       averaging only, leaving live-model buffers in place.
-    - ``param_filter``: optional ``(name, param) -> bool`` predicate to
-      restrict the shadow to a subset of trainable params. None means
-      all trainable params are tracked.
+    - ``select``: a :class:`~priml.optimizers.parameter_filter.ParameterFilter`
+      choosing which params the shadow averages -- ``trainable`` (default)
+      or ``everything``, which also takes frozen ones.
     - ``decay`` / ``update_after_step`` / ``update_every``: the usual
       lerp schedule controls.
     - ``warmup_seed``: copy live weights into the shadow at the warmup
@@ -226,6 +225,12 @@ class EMA:
 
         :func:`karras_decay` ramps it in; any ``(float, int) -> float`` works."""
 
+        select: ParameterFilter = trainable
+        """Chooses which parameters the shadow averages.
+
+        A frozen tensor still drifts under the lerp, since
+        ``p * d + p * (1 - d)`` rounds, so ``everything`` is not the default."""
+
     def __init__(self, config: Config) -> None:
         """Initialize EMA.
 
@@ -253,7 +258,7 @@ class EMA:
         self.shadow_kind = config.shadow_kind
         self.warmup_seed = config.warmup_seed
         self.decay_schedule = config.decay_schedule
-        self._param_filter: _ParamFilter | None = None
+        self.select = config.select
 
         self.shadow_model: nn.Module | None = None
         self.shadow_params: dict[str, Tensor] = {}
@@ -268,25 +273,6 @@ class EMA:
         # True once a param_dict shadow has been adopted from load_state_dict
         # before lazy init, so lazy init must not re-clone over it.
         self._loaded_shadow = False
-
-    def set_param_filter(self, param_filter: _ParamFilter | None) -> None:
-        """Restrict the shadow to a subset of trainable params.
-
-        Must be called before the first ``__call__`` (i.e. before the
-        shadow is lazily initialized); raises otherwise so existing
-        tracked-name sets don't get silently desynced from the filter.
-
-        Args:
-          param_filter: ``(name, param) -> bool`` predicate. None
-            tracks all trainable params.
-
-        """
-        if self._initialized:
-            raise RuntimeError(
-                "EMA.set_param_filter() must be called before the first "
-                "__call__ (shadow already initialized).",
-            )
-        self._param_filter = param_filter
 
     def effective_decay(self, step: int) -> float:
         """Return the decay applied at post-warmup step ``step`` (0-based).
@@ -498,13 +484,6 @@ class EMA:
 
     # -- Helpers --------------------------------------------------------------
 
-    def _should_track(self, name: str, param: nn.Parameter) -> bool:
-        if not param.requires_grad:
-            return False
-        if self._param_filter is None:
-            return True
-        return self._param_filter(name, param)
-
     def _shadow_param(self, name: str) -> Tensor:
         """Return the shadow tensor for ``name`` regardless of shadow kind."""
         if self.shadow_model is not None:
@@ -513,9 +492,7 @@ class EMA:
 
     def _lazy_initialize(self, model: nn.Module) -> None:
         self._tracked_names = {
-            name
-            for name, param in model.named_parameters()
-            if self._should_track(name, param)
+            name for name, param in model.named_parameters() if self.select(name, param)
         }
         if self.shadow_kind == "module":
             self.shadow_model = copy.deepcopy(model)
