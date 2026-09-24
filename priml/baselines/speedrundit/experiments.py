@@ -28,11 +28,12 @@ from priml.baselines.imagenet.data import NUM_CLASSES
 from priml.baselines.speedrundit.data import SpeedrunDiTData
 from priml.baselines.speedrundit.metric import VelocityError
 from priml.baselines.speedrundit.train_step import SpeedrunDiTTrainStep
+from priml.baselines.srdit.experiments import exp001
 from priml.runtime import SingleProcess
 from priml.train.train_loop import TrainLoop
 
 
-__all__ = ["SpeedrunDiTLoop", "exp000", "exp_smoke"]
+__all__ = ["SpeedrunDiTLoop", "exp000", "exp001", "exp_smoke"]
 
 
 LATENT_SIZE: Final = 16

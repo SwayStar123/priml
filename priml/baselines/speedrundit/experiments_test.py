@@ -24,11 +24,15 @@ from priml.baselines.speedrundit.data import SpeedrunDiTData
 from priml.baselines.speedrundit.experiments import (
     SpeedrunDiTLoop,
     exp000,
+    exp001,
     exp_smoke,
 )
 from priml.baselines.speedrundit.metric import VelocityError
 from priml.baselines.speedrundit.model import SpeedrunDiT
 from priml.baselines.speedrundit.train_step import SpeedrunDiTTrainStep
+from priml.baselines.srdit.train_step import SpeedrunTrainStep
+from priml.optimizers.composite import CompositeOptimizer
+from priml.optimizers.muon import Muon
 from priml.train.parallelism import NoParallel
 from priml.train.train_loop import TrainLoop
 
@@ -39,13 +43,17 @@ if TYPE_CHECKING:
     from priml.testing.experiments import ExperimentFactory
 
 
-LADDER: Final[list[ExperimentFactory[SpeedrunDiTLoop]]] = [exp000, exp_smoke]
+LADDER: Final[list[ExperimentFactory[TrainLoop.Config]]] = [
+    exp000,
+    exp001,
+    exp_smoke,
+]
 """Every published factory, in ladder order."""
 
 
 @pytest.mark.parametrize("factory", LADDER, ids=[f.__name__ for f in LADDER])
 def test_every_experiment_finalizes(
-    factory: ExperimentFactory[SpeedrunDiTLoop],
+    factory: ExperimentFactory[TrainLoop.Config],
 ) -> None:
     """A recipe must resolve without a corpus or a device."""
     config = factory().copy_tree().finalize()
@@ -55,7 +63,7 @@ def test_every_experiment_finalizes(
 
 @pytest.mark.parametrize("factory", LADDER, ids=[f.__name__ for f in LADDER])
 def test_construction_reads_no_files(
-    factory: ExperimentFactory[SpeedrunDiTLoop],
+    factory: ExperimentFactory[TrainLoop.Config],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -111,6 +119,22 @@ def test_exp000_matches_the_reference_geometry() -> None:
     assert model.projector_hidden == 2048
     assert cfg.dataset.batch_size == 256
     assert cfg.dataset.latent_scale == 0.3099
+
+
+def test_exp001_exposes_the_updated_recipe() -> None:
+    """The second rung is the REG branch, not a mutation of exp000."""
+    config = exp001().copy_tree().finalize()
+    assert config.study_name == "speedrundit"
+    assert config.experiment_name == "exp001"
+    assert isinstance(config.step, SpeedrunTrainStep.Config)
+    assert config.step.model.mlp_ratio_min == 2.0
+    assert config.step.model.mlp_ratio_max == 6.0
+    assert isinstance(config.step.optimizer, CompositeOptimizer.Config)
+    assert any(
+        isinstance(optimizer, Muon.Config)
+        for optimizer in config.step.optimizer.optimizers
+    )
+    assert exp000().step.model.projector_hidden == 2048
 
 
 def test_exp000_carries_the_reference_optimizer_recipe() -> None:

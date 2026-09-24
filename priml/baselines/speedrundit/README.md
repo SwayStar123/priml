@@ -13,6 +13,7 @@ Pinned reference: `c24c2ff25699cce63174ca56c2afcfeeb225e367`.
 uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --synthetic --samples 4 --image-size 8 --latent-size 4 --latent-channels 8 --num-classes 10 --encoder-width 16
 uv --quiet run --frozen python -m priml priml.baselines.speedrundit.experiments.exp_smoke
 uv --quiet run --frozen python -m priml priml.baselines.speedrundit.experiments.exp000
+uv --quiet run --frozen python -m priml priml.baselines.speedrundit.experiments.exp001
 uv --quiet run --frozen pytest priml/baselines/speedrundit
 ```
 
@@ -85,7 +86,8 @@ produces, so the latent loader stays this baseline's own.
 | Experiment | Purpose |
 |---|---|
 | `exp000` | SR-DiT-B/1 reproducing the pinned reference |
-| `exp_smoke` | The same recipe at a size that runs on a laptop CPU |
+| `exp001` | Updated REG/SPRINT recipe with Muon and depth-dependent MLP widths |
+| `exp_smoke` | A small CPU check of `exp000` |
 
 `exp000` is a parity port, not the "best naive recipe" the usual `exp000`
 contract asks for. That is a deliberate, argued departure: the baseline exists
@@ -93,6 +95,24 @@ to show Priml's components compute the published model exactly, so the control
 has to be the published model — SPRINT routing, value residuals, rotary
 positions and all. Once parity holds, a later fork can strip one of them and
 measure what it earned.
+
+`exp001` uses the newer [REG branch](https://github.com/SwayStar123/REG/tree/invae-sprint-rms-rope-valres-cfm-muon-layerwisescaling).
+Its smaller implementation lives in `priml/baselines/srdit/` and reuses Priml's
+Muon, RoPE, conditioning, and attention components. It has REG projection
+targets at several depths, contrastive flow matching, and MLP expansion that
+grows from 2 to 6 across the transformer. The shared Muon and RoPE differ
+numerically from that branch, so the `exp000` bit-for-bit claim does not apply
+to `exp001`.
+
+`exp001` reads paired images and sampled INVAE latents from
+`/opt/scratch/datasets/srdit`. Prepare them from extracted ImageNet:
+
+```bash
+uv --quiet run --frozen python -m priml.baselines.srdit.scripts.prepare_data --source /datasets/imagenet --output /opt/scratch/datasets/srdit
+```
+
+The preparer downloads the INVAE checkpoint from REPA-E when `--checkpoint`
+is omitted; training loads the DINOv2 teacher through Torch Hub.
 
 ## Bit-for-bit parity
 

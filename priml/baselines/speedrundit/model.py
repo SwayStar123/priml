@@ -44,6 +44,7 @@ from priml.cost import (
     traffic,
 )
 from priml.math.custom_types import TensorFn
+from priml.math.diffusion.conditioning import modulate, timestep_embedding
 from priml.model.attention.kernel import SdpaFused
 from priml.model.custom_types import (
     ActivationFn,
@@ -92,21 +93,6 @@ def gelu_tanh(x: Tensor) -> Tensor:
 
     """
     return nn.functional.gelu(x, approximate="tanh")
-
-
-def modulate(x: Tensor, shift: Tensor, scale: Tensor) -> Tensor:
-    """Apply an adaLN scale-shift over the token axis.
-
-    Args:
-      x: Normalized activations, ``[batch, tokens, channels]``.
-      shift: Additive term, ``[batch, channels]``.
-      scale: Multiplicative offset about one, ``[batch, channels]``.
-
-    Returns:
-      modulated: ``x * (1 + scale) + shift``, broadcast over tokens.
-
-    """
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
 def sincos_position_table(channels: int, grid: int, *, lead: int = 1) -> Tensor:
@@ -350,20 +336,7 @@ class TimestepEmbedder(nn.Module):
           features: ``[batch, channels_frequency]``, ``cos`` then ``sin``.
 
         """
-        half = self.channels_frequency // 2
-        # float32 regardless of the activation dtype: the frequencies span four
-        # decades, and drawing them in bf16 collapses the highest ones onto each
-        # other. The cast back to t.dtype happens once, at the end.
-        freqs = torch.exp(
-            -math.log(self.max_period)
-            * torch.arange(start=0, end=half, dtype=torch.float32, device=t.device)
-            / half,
-        )
-        args = t[:, None].float() * freqs[None]
-        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        if self.channels_frequency % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], -1)
-        return embedding
+        return timestep_embedding(t, self.channels_frequency, self.max_period)
 
     @override
     def forward(self, t: Tensor, **kwargs: object) -> Tensor:

@@ -9,8 +9,7 @@ that four mechanisms the reference treats as fixed are values in slots here --
 a class token diffused alongside the latent -- so removing one is a fork
 rather than an edit.
 
-The bit-for-bit goldens under ``testdata/`` are the primary artifact. They
-freeze initialization, one forward, the objective, and five optimizer steps;
-``scripts/parity.py`` is what established them against the reference, and is
-not part of the library.
+The bit-for-bit goldens under ``testdata/`` cover ``exp000``. The updated
+``exp001`` recipe lives in ``priml.baselines.srdit`` and uses shared Muon and
+RoPE, so it does not claim numerical identity with its later REG source.
 """
