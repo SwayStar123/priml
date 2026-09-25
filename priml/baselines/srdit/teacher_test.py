@@ -7,7 +7,13 @@ from torch import nn
 import pytest
 import torch
 
-from priml.baselines.srdit.teacher import _load_encoder
+from priml.baselines.srdit.teacher import DinoV2Teacher, _load_encoder
+
+
+def test_frozen_teacher_cost_has_no_backward_work() -> None:
+    estimate = DinoV2Teacher.Config().cost(batch_size=2, dtype=torch.float32)
+    assert estimate["flops", "primal", "matmul", torch.float32] > 0
+    assert estimate["flops", "adjoint", "matmul", torch.float32] == 0
 
 
 def test_rank_zero_populates_hub_before_other_ranks(

@@ -10,8 +10,10 @@ from torch.nn import functional
 
 import torch
 
-from priml.cost import Cost, elementwise_cost
-from priml.model.attention.rope import RoPE
+from priml.cost import Cost, cost, elementwise_cost, matmul_cost
+from priml.model.attention.kernel import attention_kernel_cost
+from priml.model.attention.rope import RoPE, rotation_cost
+from priml.model.norm import RMSNorm
 
 
 class ValueBlend(Protocol):
@@ -91,6 +93,68 @@ class ValueResidualAttention(nn.Module):
 
         value_residual: bool = True
         """Mix values with a supplied reference value stream."""
+
+        def cost(
+            self,
+            *,
+            seq_len: int,
+            batch_size: int,
+            dtype: torch.dtype | None,
+            **kwargs: object,
+        ) -> Cost:
+            """Cost projections, QK normalization, rotary, SDPA, and value blend."""
+            del kwargs
+            head_dim = self.channels // self.heads
+            rows = seq_len * batch_size
+            total = (
+                matmul_cost(
+                    channels_in=self.channels,
+                    channels_out=3 * self.channels,
+                    bias=True,
+                    rows=rows,
+                    dtype=dtype,
+                )
+                + matmul_cost(
+                    channels_in=self.channels,
+                    channels_out=self.channels,
+                    bias=True,
+                    rows=rows,
+                    dtype=dtype,
+                )
+                + attention_kernel_cost(
+                    seq_len=seq_len,
+                    batch_size=batch_size,
+                    dtype=dtype,
+                    num_heads=self.heads,
+                    channels_head=head_dim,
+                )
+                + rotation_cost(
+                    RoPE.Config(channels_head=(head_dim // 2, head_dim // 2)),
+                    rows=rows,
+                    dtype=dtype,
+                    channels_head=head_dim,
+                    heads=2 * self.heads,
+                )
+            )
+            if self.qk_norm:
+                total += cost(
+                    RMSNorm.Config(channels_in=head_dim, elementwise_affine=True),
+                    seq_len=seq_len,
+                    batch_size=batch_size * self.heads,
+                    dtype=dtype,
+                ).tile(2, copies=2)
+            if self.value_residual:
+                elements = rows * self.channels
+                total += elementwise_cost(
+                    primal=3 * elements,
+                    adjoint=4 * elements,
+                    channels=head_dim,
+                    rows=rows * self.heads,
+                    params=1,
+                    inputs=2,
+                    dtype=dtype,
+                )
+            return total
 
     def __init__(self, config: Config) -> None:
         super().__init__()

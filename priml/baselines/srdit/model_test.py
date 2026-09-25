@@ -35,6 +35,13 @@ def tiny_model() -> SpeedrunDiT:
     return config.make()
 
 
+def test_cost_counts_shared_projector_once() -> None:
+    model = tiny_model()
+    estimate = model.config.cost(batch_size=2, dtype=torch.float32)
+    assert estimate.params == sum(parameter.numel() for parameter in model.parameters())
+    assert estimate["flops", "primal", "matmul", torch.float32] > 0
+
+
 def test_rope_leaves_cls_untouched_and_uses_original_positions() -> None:
     rope = RoPE.Config(channels_head=(4, 4)).make()
     positions = image_token_positions(4, torch.device("cpu")).expand(2, -1, -1)
@@ -45,7 +52,8 @@ def test_rope_leaves_cls_untouched_and_uses_original_positions() -> None:
     full_cos, full_sin = rope(image_token_positions(4, torch.device("cpu")))
     cos, sin = (
         factor.expand(2, -1, -1, -1).gather(
-            1, kept[:, :, None, None].expand(-1, -1, 1, factor.shape[-1])
+            1,
+            kept[:, :, None, None].expand(-1, -1, 1, factor.shape[-1]),
         )
         for factor in (full_cos, full_sin)
     )
@@ -57,7 +65,11 @@ def test_rope_leaves_cls_untouched_and_uses_original_positions() -> None:
     assert not torch.equal(rotated[:, 1], x[:, 1])
     single_cos, single_sin = rope(selected[0:1, 1:2])
     single, _ = RoPE.rotate(
-        x[0:1, 1:2], x[0:1, 1:2], single_cos, single_sin, interleave=True
+        x[0:1, 1:2],
+        x[0:1, 1:2],
+        single_cos,
+        single_sin,
+        interleave=True,
     )
     assert torch.equal(rotated[0:1, 1:2], single)
 
@@ -124,7 +136,8 @@ def test_optimizer_partitions_hidden_matrices_from_heads() -> None:
 
 def test_shift_and_sampler_return_expected_latent_shapes() -> None:
     assert torch.allclose(
-        time_shift(torch.tensor([0.0, 1.0]), 8192), torch.tensor([0.0, 1.0])
+        time_shift(torch.tensor([0.0, 1.0]), 8192),
+        torch.tensor([0.0, 1.0]),
     )
     model = tiny_model().eval()
     latents = torch.randn(2, 2, 4, 4)
@@ -164,7 +177,12 @@ def test_zero_cls_guidance_keeps_conditional_cls_drift() -> None:
     labels = torch.tensor([1])
     torch.manual_seed(7)
     _, conditional_cls = sample_latents(
-        model, latents, cls, labels, num_steps=2, shift_time=False
+        model,
+        latents,
+        cls,
+        labels,
+        num_steps=2,
+        shift_time=False,
     )
     torch.manual_seed(7)
     _, zero_guidance_cls = sample_latents(

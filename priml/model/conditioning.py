@@ -7,6 +7,7 @@ from torch import Tensor, nn
 
 import torch
 
+from priml.cost import Cost, elementwise_cost, matmul_cost, traffic
 from priml.math.diffusion.conditioning import timestep_embedding
 
 
@@ -19,6 +20,39 @@ class TimestepEmbedder(nn.Module):
 
         frequency_channels: int = 256
         """Width of the fixed sinusoidal input embedding."""
+
+        def cost(
+            self,
+            *,
+            batch_size: int,
+            dtype: torch.dtype | None,
+            **kwargs: object,
+        ) -> Cost:
+            """Cost the two projections and SiLU for one batch."""
+            del kwargs
+            return (
+                matmul_cost(
+                    channels_in=self.frequency_channels,
+                    channels_out=self.channels,
+                    bias=True,
+                    rows=batch_size,
+                    dtype=dtype,
+                )
+                + matmul_cost(
+                    channels_in=self.channels,
+                    channels_out=self.channels,
+                    bias=True,
+                    rows=batch_size,
+                    dtype=dtype,
+                )
+                + elementwise_cost(
+                    primal=5 * batch_size * self.channels,
+                    adjoint=5 * batch_size * self.channels,
+                    channels=self.channels,
+                    rows=batch_size,
+                    dtype=dtype,
+                )
+            )
 
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -46,6 +80,26 @@ class ClassEmbedder(nn.Module):
 
         dropout: float = 0.1
         """Probability of replacing a label with the null class."""
+
+        def cost(
+            self,
+            *,
+            batch_size: int,
+            dtype: torch.dtype | None,
+            **kwargs: object,
+        ) -> Cost:
+            """Cost embedding lookup; all class rows are owned."""
+            del kwargs
+            table = (self.num_classes + 1) * self.channels
+            return traffic(
+                "primal",
+                "selection",
+                elements=batch_size * self.channels,
+                dtype=dtype,
+            ) + Cost(
+                params=table,
+                params_active=min(batch_size, self.num_classes + 1) * self.channels,
+            )
 
     def __init__(self, config: Config) -> None:
         super().__init__()

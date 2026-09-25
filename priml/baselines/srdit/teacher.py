@@ -8,6 +8,9 @@ from torch.nn import functional
 
 import torch
 
+from priml.cost import Cost, elementwise_cost, matmul_cost
+from priml.model.attention.kernel import attention_kernel_cost
+
 
 def _load_encoder(variant: str) -> nn.Module:
     """Populate the shared Hub cache before the other ranks load DINOv2."""
@@ -44,6 +47,82 @@ class DinoV2Teacher(nn.Module):
         image_size: int = 256
         """Side length of the preprocessed teacher image."""
 
+        def cost(
+            self,
+            *,
+            batch_size: int,
+            dtype: torch.dtype | None,
+            **kwargs: object,
+        ) -> Cost:
+            """Estimate the frozen ViT-B/14 forward through the requested layer."""
+            del kwargs
+            if self.variant != "dinov2_vitb14":
+                raise ValueError(f"no cost model for DINOv2 variant {self.variant}")
+            width, heads, mlp_width = 768, 12, 3072
+            patches = (self.image_size // 16) ** 2
+            tokens = patches + 1
+            rows = batch_size * tokens
+            block = (
+                matmul_cost(
+                    channels_in=width,
+                    channels_out=3 * width,
+                    bias=True,
+                    rows=rows,
+                    dtype=dtype,
+                )
+                + matmul_cost(
+                    channels_in=width,
+                    channels_out=width,
+                    bias=True,
+                    rows=rows,
+                    dtype=dtype,
+                )
+                + attention_kernel_cost(
+                    seq_len=tokens,
+                    batch_size=batch_size,
+                    dtype=dtype,
+                    num_heads=heads,
+                    channels_head=width // heads,
+                )
+                + matmul_cost(
+                    channels_in=width,
+                    channels_out=mlp_width,
+                    bias=True,
+                    rows=rows,
+                    dtype=dtype,
+                )
+                + matmul_cost(
+                    channels_in=mlp_width,
+                    channels_out=width,
+                    bias=True,
+                    rows=rows,
+                    dtype=dtype,
+                )
+                + elementwise_cost(
+                    primal=8 * rows * width,
+                    adjoint=0,
+                    channels=width,
+                    rows=rows,
+                    dtype=dtype,
+                )
+            )
+            patch = matmul_cost(
+                channels_in=3 * 14 * 14,
+                channels_out=width,
+                bias=True,
+                rows=batch_size * patches,
+                dtype=dtype,
+            )
+            layers = min(12, max((1, *(index + 1 for index in self.layer_indices))))
+            full = patch + block.tile(layers, copies=layers)
+            # The teacher runs under no_grad; keep its parameters but only its
+            # forward kernels in the training cost.
+            return Cost(
+                cells=full.only("primal").cells,
+                params=full.params,
+                params_active=full.params_active,
+            )
+
     def __init__(self, config: Config) -> None:
         super().__init__()
         if config.image_size % 16:
@@ -78,13 +157,18 @@ class DinoV2Teacher(nn.Module):
         mean = image.new_tensor((0.485, 0.456, 0.406))[None, :, None, None]
         std = image.new_tensor((0.229, 0.224, 0.225))[None, :, None, None]
         image = functional.interpolate(
-            (image - mean) / std, size=(size, size), mode="bicubic"
+            (image - mean) / std,
+            size=(size, size),
+            mode="bicubic",
         )
         blocks = len(self.encoder.blocks)
         requested = tuple(max(0, min(i, blocks - 1)) for i in self.config.layer_indices)
         unique = sorted(set(requested))
         layers = self.encoder.get_intermediate_layers(
-            image, n=unique, reshape=False, return_class_token=True
+            image,
+            n=unique,
+            reshape=False,
+            return_class_token=True,
         )
         by_layer = {
             index: torch.cat((cls[:, None], patches), dim=1)

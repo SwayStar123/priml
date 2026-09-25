@@ -14,11 +14,13 @@ from torch import Tensor, nn
 
 import torch
 
+from priml.cost import Cost, cost, elementwise_cost, matmul_cost
 from priml.math.diffusion.conditioning import modulate
 from priml.math.position_embedding import image_token_positions, sinusoidal_positions
 from priml.model.attention.rope import RoPE
 from priml.model.attention.value_residual import ValueResidualAttention
 from priml.model.conditioning import ClassEmbedder, TimestepEmbedder
+from priml.model.norm import RMSNorm
 from priml.model.token_routing import SparseDenseFusion, select_tokens
 
 
@@ -50,7 +52,8 @@ class SiTBlock(nn.Module):
             nn.Linear(hidden, channels),
         )
         self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(channels, 6 * channels)
+            nn.SiLU(),
+            nn.Linear(channels, 6 * channels),
         )
 
     def forward(
@@ -72,12 +75,17 @@ class FinalLayer(nn.Module):
     """Project the CLS and image tokens into their velocity targets."""
 
     def __init__(
-        self, channels: int, patch_size: int, out_channels: int, cls_channels: int
+        self,
+        channels: int,
+        patch_size: int,
+        out_channels: int,
+        cls_channels: int,
     ) -> None:
         super().__init__()
         self.norm_final = nn.RMSNorm(channels, eps=1e-6, elementwise_affine=False)
         self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(), nn.Linear(channels, 2 * channels)
+            nn.SiLU(),
+            nn.Linear(channels, 2 * channels),
         )
         self.linear = nn.Linear(channels, patch_size**2 * out_channels)
         self.linear_cls = nn.Linear(channels, cls_channels)
@@ -145,6 +153,130 @@ class SpeedrunDiT(nn.Module):
         decoder_blocks: int = 2
         """Dense blocks after sparse and dense streams are fused."""
 
+        def cost(
+            self,
+            *,
+            batch_size: int = 1,
+            dtype: torch.dtype | None = None,
+            **kwargs: object,
+        ) -> Cost:
+            """Estimate a training forward, pricing SPRINT blocks at routed length."""
+            del kwargs
+            width = self.hidden_size
+            grid = self.input_size // self.patch_size
+            dense = grid * grid + 1
+            sparse = max(1, int(dense * (1 - self.drop_ratio)))
+            middle_end = self.depth - self.decoder_blocks
+
+            def linear(channels_in: int, channels_out: int, rows: int) -> Cost:
+                return matmul_cost(
+                    channels_in=channels_in,
+                    channels_out=channels_out,
+                    bias=True,
+                    rows=rows,
+                    dtype=dtype,
+                )
+
+            total = (
+                linear(
+                    self.in_channels * self.patch_size**2,
+                    width,
+                    batch_size * (dense - 1),
+                )
+                + linear(self.cls_channels, width, batch_size)
+                + cost(
+                    RMSNorm.Config(channels_in=width, elementwise_affine=True),
+                    seq_len=1,
+                    batch_size=batch_size,
+                    dtype=dtype,
+                )
+                + cost(
+                    TimestepEmbedder.Config(channels=width),
+                    batch_size=batch_size,
+                    dtype=dtype,
+                )
+                + cost(
+                    ClassEmbedder.Config(num_classes=self.num_classes, channels=width),
+                    batch_size=batch_size,
+                    dtype=dtype,
+                )
+                + cost(
+                    RoPE.Config(channels_head=(width // self.num_heads // 2,) * 2),
+                    seq_len=dense,
+                    batch_size=1,
+                    dtype=dtype,
+                )
+            )
+            projected_once = False
+            for index in range(self.depth):
+                length = sparse if self.encoder_blocks <= index < middle_end else dense
+                rows = batch_size * length
+                ratio = self.mlp_ratio_min + (
+                    (self.mlp_ratio_max - self.mlp_ratio_min)
+                    * index
+                    / max(1, self.depth - 1)
+                )
+                hidden = int(width * ratio)
+                total += (
+                    cost(
+                        ValueResidualAttention.Config(
+                            channels=width,
+                            heads=self.num_heads,
+                            qk_norm=self.qk_norm,
+                            value_residual=index > 0,
+                        ),
+                        seq_len=length,
+                        batch_size=batch_size,
+                        dtype=dtype,
+                    )
+                    + cost(
+                        RMSNorm.Config(channels_in=width),
+                        seq_len=length,
+                        batch_size=2 * batch_size,
+                        dtype=dtype,
+                    )
+                    + linear(width, hidden, rows)
+                    + linear(hidden, width, rows)
+                    + linear(width, 6 * width, batch_size)
+                    + elementwise_cost(
+                        primal=18 * rows * width + 5 * batch_size * width,
+                        adjoint=18 * rows * width + 5 * batch_size * width,
+                        channels=width,
+                        rows=rows,
+                        dtype=dtype,
+                    )
+                )
+                if index + 1 in self.projection_depths:
+                    projection = (
+                        linear(width, self.projector_hidden, rows)
+                        + linear(self.projector_hidden, self.projector_hidden, rows)
+                        + linear(self.projector_hidden, self.cls_channels, rows)
+                    )
+                    total += projection.tile(1, copies=int(not projected_once))
+                    projected_once = True
+            total += cost(
+                SparseDenseFusion.Config(channels=width),
+                seq_len=dense,
+                batch_size=batch_size,
+                dtype=dtype,
+            )
+            return (
+                total
+                + cost(
+                    RMSNorm.Config(channels_in=width),
+                    seq_len=dense,
+                    batch_size=batch_size,
+                    dtype=dtype,
+                )
+                + linear(width, 2 * width, batch_size)
+                + linear(
+                    width,
+                    self.patch_size**2 * self.in_channels,
+                    batch_size * (dense - 1),
+                )
+                + linear(width, self.cls_channels, batch_size)
+            )
+
     def __init__(self, config: Config) -> None:
         super().__init__()
         if config.depth < config.encoder_blocks + config.decoder_blocks:
@@ -158,7 +290,10 @@ class SpeedrunDiT(nn.Module):
         self.config = config
         self.grid_size = config.input_size // config.patch_size
         self.x_embedder = nn.Conv2d(
-            config.in_channels, config.hidden_size, config.patch_size, config.patch_size
+            config.in_channels,
+            config.hidden_size,
+            config.patch_size,
+            config.patch_size,
         )
         self.t_embedder = TimestepEmbedder.Config(channels=config.hidden_size).make()
         self.y_embedder = ClassEmbedder.Config(
@@ -236,7 +371,11 @@ class SpeedrunDiT(nn.Module):
             nn.init.zeros_(module.bias)
 
     def _project(
-        self, x: Tensor, layer: int, ids: Tensor | None, projections: list[Projection]
+        self,
+        x: Tensor,
+        layer: int,
+        ids: Tensor | None,
+        projections: list[Projection],
     ) -> None:
         if layer in self.config.projection_depths:
             projections.append(Projection(self.projector(x), ids))
@@ -268,7 +407,8 @@ class SpeedrunDiT(nn.Module):
         x = torch.cat((cls, spatial), dim=1) + self.pos_embed
         rope_factors = self.rope(image_token_positions(self.grid_size, x.device))
         condition = self.t_embedder(t) + self.y_embedder(
-            y, force_drop=force_drop_labels
+            y,
+            force_drop=force_drop_labels,
         )
         projections: list[Projection] = []
         first_v: Tensor | None = None
@@ -289,7 +429,8 @@ class SpeedrunDiT(nn.Module):
 
             def select_factor(factor: Tensor) -> Tensor:
                 return factor.expand(batch, -1, -1, -1).gather(
-                    1, kept[:, :, None, None].expand(-1, -1, 1, factor.shape[-1])
+                    1,
+                    kept[:, :, None, None].expand(-1, -1, 1, factor.shape[-1]),
                 )
 
             sparse_rope_factors = (
@@ -300,7 +441,10 @@ class SpeedrunDiT(nn.Module):
             first_v.gather(
                 2,
                 kept[:, None, :, None].expand(
-                    -1, first_v.shape[1], -1, first_v.shape[3]
+                    -1,
+                    first_v.shape[1],
+                    -1,
+                    first_v.shape[3],
                 ),
             )
             if kept is not None and first_v is not None

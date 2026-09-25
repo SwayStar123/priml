@@ -7,6 +7,8 @@ from torch import Tensor, nn
 
 import torch
 
+from priml.cost import Cost, matmul_cost
+
 
 def select_tokens(x: Tensor, drop_ratio: float) -> tuple[Tensor, Tensor | None]:
     """Keep a random subset of tokens and return their original indices."""
@@ -25,6 +27,24 @@ class SparseDenseFusion(nn.Module):
     class Config(Fig["SparseDenseFusion"]):
         channels: int = -1
         """Token width shared by dense and sparse streams."""
+
+        def cost(
+            self,
+            *,
+            seq_len: int,
+            batch_size: int,
+            dtype: torch.dtype | None,
+            **kwargs: object,
+        ) -> Cost:
+            """Cost the fusion projection and its learned mask token."""
+            del kwargs
+            return matmul_cost(
+                channels_in=2 * self.channels,
+                channels_out=self.channels,
+                bias=True,
+                rows=seq_len * batch_size,
+                dtype=dtype,
+            ) + Cost(params=self.channels, params_active=self.channels)
 
     def __init__(self, config: Config) -> None:
         super().__init__()
