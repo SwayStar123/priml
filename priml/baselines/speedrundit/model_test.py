@@ -1,6 +1,11 @@
 """Shape, routing, and objective checks for the SpeedrunDiT backbone."""
 
+# PyTorch optimizer parameter groups are dynamically typed by its stubs.
+# pyright: reportAny=false
+
 from __future__ import annotations
+
+from typing import override
 
 from torch import nn
 
@@ -95,7 +100,7 @@ def test_training_routing_alignment_and_backward() -> None:
 
 def test_position_table_promotes_bfloat16_tokens_to_float32() -> None:
     model = tiny_model().eval()
-    model.wg_norm = nn.Identity()
+    model.wg_norm = nn.Identity()  # pyright: ignore[reportAttributeAccessIssue]
     captured = None
 
     class StopForwardError(Exception):
@@ -170,6 +175,7 @@ def test_zero_cls_guidance_keeps_conditional_cls_drift() -> None:
     class ConstantVelocityModel(nn.Module):
         config = type("Config", (), {"num_classes": 2})()
 
+        @override
         def forward(
             self,
             x: torch.Tensor,
@@ -188,7 +194,7 @@ def test_zero_cls_guidance_keeps_conditional_cls_drift() -> None:
     labels = torch.tensor([1])
     torch.manual_seed(7)
     _, conditional_cls = sample_latents(
-        model,
+        model,  # pyright: ignore[reportArgumentType] -- model API test double
         latents,
         cls,
         labels,
@@ -197,7 +203,7 @@ def test_zero_cls_guidance_keeps_conditional_cls_drift() -> None:
     )
     torch.manual_seed(7)
     _, zero_guidance_cls = sample_latents(
-        model,
+        model,  # pyright: ignore[reportArgumentType] -- model API test double
         latents,
         cls,
         labels,

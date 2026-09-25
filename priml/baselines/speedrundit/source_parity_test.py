@@ -1,5 +1,8 @@
 """REG source model, backward, and five-step optimizer parity."""
 
+# The source artifact is a nested torch.load dictionary without a static schema.
+# pyright: reportAny=false
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -60,6 +63,7 @@ def test_reg_source_forward_backward_and_five_updates() -> None:
             if ids is None:
                 assert projection.ids_keep is None
             else:
+                assert projection.ids_keep is not None
                 assert torch.equal(projection.ids_keep, ids)
         (
             output.velocity.sum()

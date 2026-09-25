@@ -7,6 +7,8 @@ from pathlib import Path
 import torch
 
 from priml.baselines.speedrundit.experiments import exp000, exp001, exp_smoke
+from priml.optimizers.composite import CompositeOptimizer
+from priml.optimizers.muon import Muon
 
 
 def test_experiment_config_goldens() -> None:
@@ -47,8 +49,14 @@ def test_exp001_changes_only_numerical_implementations() -> None:
     assert simpler.step.model.position_compute_dtype == torch.float32
     assert source.step.model.reference_rope
     assert not simpler.step.model.reference_rope
-    assert source.step.optimizer.optimizers[1].reference_numerics
-    assert not simpler.step.optimizer.optimizers[1].reference_numerics
+    assert isinstance(source.step.optimizer, CompositeOptimizer.Config)
+    assert isinstance(simpler.step.optimizer, CompositeOptimizer.Config)
+    source_muon = source.step.optimizer.optimizers[1]
+    simpler_muon = simpler.step.optimizer.optimizers[1]
+    assert isinstance(source_muon, Muon.Config)
+    assert isinstance(simpler_muon, Muon.Config)
+    assert source_muon.reference_numerics
+    assert not simpler_muon.reference_numerics
     assert source.step.model.depth == simpler.step.model.depth
     assert source.step.model.projection_depths == simpler.step.model.projection_depths
     assert source.step.projection_coeff == simpler.step.projection_coeff

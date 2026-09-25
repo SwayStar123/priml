@@ -1,5 +1,8 @@
 """Map-style paired ImageNet and INVAE data for the reference sampler order."""
 
+# NumPy's load return type is imprecise in its stubs.
+# pyright: reportAny=false
+
 from __future__ import annotations
 
 from dataclasses import field
@@ -74,6 +77,7 @@ class PairedImageLatentDataset(Dataset[dict[str, Tensor]]):
     def __len__(self) -> int:
         return len(self.records)
 
+    @override
     def __getitem__(self, index: int) -> dict[str, Tensor]:
         image_path, latent_path, label = self.records[index]
         image = read_image(image_path)
@@ -137,7 +141,7 @@ class SpeedrunImageNetData:
         self.timer_epoch = CheckpointableStepTimer()
 
     def _loader(self, *, shuffle: bool) -> DataLoader[dict[str, Tensor]]:
-        sampler = None
+        sampler: DistributedSampler[dict[str, Tensor]] | None = None
         if torch.distributed.is_available() and torch.distributed.is_initialized():
             sampler = DistributedSampler(self.dataset, shuffle=shuffle, drop_last=True)
         if shuffle:

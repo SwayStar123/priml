@@ -1,5 +1,8 @@
 """Crop extracted ImageNet and encode the paired 32-channel INVAE latents."""
 
+# argparse.Namespace attributes are dynamically typed by its stubs.
+# pyright: reportAny=false
+
 from __future__ import annotations
 
 from pathlib import Path

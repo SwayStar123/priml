@@ -1,5 +1,8 @@
 """Local ImageNet/INVAE preparation without the REG repository at runtime."""
 
+# NumPy and JSON return dynamically typed data in this integration test.
+# pyright: reportAny=false
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -25,6 +28,10 @@ class _FakeVAE:
         return Posterior()
 
 
+def _fake_load_invae(*_args: object, **_kwargs: object) -> _FakeVAE:
+    return _FakeVAE()
+
+
 def test_preparer_writes_paired_source_layout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -37,9 +44,7 @@ def test_preparer_writes_paired_source_layout(
     Image.new("RGB", (320, 280), (128, 64, 32)).save(
         image_dir / f"{first_class}_1.JPEG"
     )
-    monkeypatch.setattr(
-        prepare_data, "load_invae", lambda *_args, **_kwargs: _FakeVAE()
-    )
+    monkeypatch.setattr(prepare_data, "load_invae", _fake_load_invae)
     output = tmp_path / "prepared"
     assert prepare_data.prepare(tmp_path / "raw", output, device="cpu") == 1
     image_path = output / "images/00000/img00000000.png"

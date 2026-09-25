@@ -5,6 +5,7 @@ Reference: https://github.com/SwayStar123/REG/blob/invae-sprint-rms-rope-valres-
 """
 
 # Preserve the published checkpoint's module names and third-party signatures.
+# pyright: basic
 # ruff: noqa: ANN001, ANN003, ANN201, D101, D102, D103, N802, ARG002, RUF005, B007, RET504, F841, B006
 
 from importlib import import_module
@@ -203,6 +204,7 @@ class Encoder(nn.Module):
         curr_res = resolution
         in_ch_mult = (1,) + tuple(ch_mult)
         self.down = nn.ModuleList()
+        block_in = ch
         for i_level in range(self.num_resolutions):
             block = nn.ModuleList()
             attn = nn.ModuleList()
@@ -343,6 +345,7 @@ class Decoder(nn.Module):
         )
 
         # upsampling
+        self.last_z_shape: torch.Size | None = None
         self.up = nn.ModuleList()
         for i_level in reversed(range(self.num_resolutions)):
             block = nn.ModuleList()

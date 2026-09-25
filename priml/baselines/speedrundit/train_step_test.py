@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import override
 
 from configgle import Fig
 from torch import Tensor, nn
@@ -28,6 +29,7 @@ class FakeTeacher(nn.Module):
         super().__init__()
         del config
 
+    @override
     def forward(self, image: Tensor) -> tuple[Tensor, ...]:
         """Return the three reference alignment depths and CLS feature."""
         tokens = 4 if image.shape[-1] == 4 else image.shape[-1] // 16
@@ -80,10 +82,11 @@ class _SmokeSteps(nn.Module):
         self.step = config.make()
         self.model = self.step.model
 
+    @override
     def forward(self, batch: dict[str, Tensor]) -> Tensor:
         """Train for five updates on fixed inputs; retain each scalar loss."""
         prepared = self.step.preprocess_batch(dict[str, object](batch))
-        losses = []
+        losses: list[Tensor] = []
         for _ in range(5):
             result = self.step.train_step(**prepared)
             losses.append(result["loss"].mean())

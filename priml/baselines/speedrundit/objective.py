@@ -35,7 +35,7 @@ def interpolant(
             -(math.pi / 2) * angle.sin(),
             (math.pi / 2) * angle.cos(),
         )
-    raise ValueError(f"unsupported flow path: {path}")
+    raise ValueError(f"unsupported flow path: {path}")  # pyright: ignore[reportUnreachable]
 
 
 def projection_loss(

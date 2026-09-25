@@ -34,7 +34,7 @@ def _prepared_pair(root: Path, name: str, label: int) -> None:
 
 
 def test_reference_names_and_tensor_values(tmp_path: Path) -> None:
-    labels = []
+    labels: list[list[str | int]] = []
     for index in range(10):
         name = f"{index:08d}"
         _prepared_pair(tmp_path, name, index + 5)

@@ -5,9 +5,12 @@ value residual attention, adaptive conditioning, sparse routing, and layerwise
 MLP width. The default configuration is the published SiT-B/1 run.
 """
 
+# PyTorch's module buffer and parameter stubs expose several values as Any.
+# pyright: reportAny=false
+
 from __future__ import annotations
 
-from typing import NamedTuple
+from typing import NamedTuple, override
 
 from configgle import Fig
 from torch import Tensor, nn
@@ -58,6 +61,7 @@ class SiTBlock(nn.Module):
             nn.Linear(channels, 6 * channels),
         )
 
+    @override
     def forward(
         self,
         x: Tensor,
@@ -92,6 +96,7 @@ class FinalLayer(nn.Module):
             nn.Linear(channels, 2 * channels),
         )
 
+    @override
     def forward(self, x: Tensor, condition: Tensor) -> tuple[Tensor, Tensor]:
         """Return patch and CLS velocities."""
         shift, scale = self.adaLN_modulation(condition).chunk(2, dim=-1)
@@ -405,6 +410,7 @@ class SpeedrunDiT(nn.Module):
         if layer in self.config.projection_depths:
             projections.append(Projection(self.projector(x), ids))
 
+    @override
     def forward(
         self,
         x: Tensor,
