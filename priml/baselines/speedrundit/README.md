@@ -99,22 +99,23 @@ measure what it earned.
 `exp001` uses the newer [REG branch](https://github.com/SwayStar123/REG/tree/invae-sprint-rms-rope-valres-cfm-muon-layerwisescaling).
 Its smaller implementation lives in `priml/baselines/srdit/` and reuses Priml's
 Muon, RoPE, conditioning, and attention components. It has REG projection
-targets at several depths, contrastive flow matching, and MLP expansion that
-grows from 2 to 6 across the transformer. The shared Muon and RoPE differ
+targets at several depths and MLP expansion that grows from 2 to 6 across
+the transformer; both experiments use contrastive flow matching. The shared
+Muon and RoPE differ
 numerically from that branch, so the `exp000` bit-for-bit claim does not apply
 to `exp001`.
 
 `exp001` reads paired images and sampled INVAE latents from
-`/opt/scratch/datasets/srdit`. The existing preparer writes the images, then
-encodes the latents:
+`/opt/scratch/datasets/srdit`. Priml's preparer writes the images; the
+reference's existing encoder writes the latents:
 
 ```bash
 uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --convert --imagenet /datasets/imagenet --directory /opt/scratch/datasets/srdit
-uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --encode-invae --directory /opt/scratch/datasets/srdit
+python preprocessing/dataset_tools.py encode --source=/opt/scratch/datasets/srdit/images --dest=/opt/scratch/datasets/srdit/vae-in
 ```
 
-The preparer downloads the INVAE checkpoint from REPA-E when `--checkpoint`
-is omitted; training loads the DINOv2 teacher through Torch Hub.
+Run the encoder from the reference clone in its own environment. Training
+loads the DINOv2 teacher through Torch Hub.
 
 ## Bit-for-bit parity
 

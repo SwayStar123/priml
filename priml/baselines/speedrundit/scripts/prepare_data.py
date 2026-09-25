@@ -5,16 +5,17 @@
 exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 "$0" "$@"
 Stage the SR-DiT latent corpus, or synthesize a small one for smoke runs.
 
-The reference builds its corpus in two passes. ``--convert`` reads extracted
-ImageNet through priml's ImageNet source and writes the reference's
-``images/`` tree -- ADM-cropped 256px PNGs named by their sorted-order index,
-with ``images/dataset.json`` -- bit for bit what the reference's
-``dataset_tools.py convert`` writes. ``--encode-invae`` samples INVAE latents
-into ``vae-in/`` from those images. The merged ``exp000`` loader requires a
-stored DINOv2 class token and can load stored patch features; ``exp001`` runs
-the teacher online. ``--verify`` checks the finished tree, and the synthetic
-path writes the whole layout with random tensors, which makes the smoke run
-and loader tests work without ImageNet, a tokenizer, or network access.
+The reference builds its corpus in two passes, and this script owns the
+first: ``--convert`` reads extracted ImageNet through priml's ImageNet source
+and writes the reference's ``images/`` tree -- ADM-cropped 256px PNGs named by
+their sorted-order index, with ``images/dataset.json`` -- bit for bit what the
+reference's ``dataset_tools.py convert`` writes. The second pass, INVAE
+encoding into ``vae-in/``, needs the tokenizer's checkpoint and a GPU and is
+the reference's own ``dataset_tools.py encode``, run on that tree; the
+DINOv2 targets likewise come from outside. ``--verify`` then checks the
+finished tree, and the synthetic path writes the whole layout with random
+tensors, which is what makes the smoke experiment and the loader tests run
+with no ImageNet, no tokenizer, and no network.
 
 Publishing is atomic: the tree is built in a hidden sibling directory on the
 same filesystem and renamed into place, so an interrupted run leaves either
@@ -24,7 +25,6 @@ Examples:
   uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --help  # noqa: E501
   uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --synthetic --samples 64  # noqa: E501
   uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --convert --imagenet /datasets/imagenet  # noqa: E501
-  uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --encode-invae --directory /opt/scratch/datasets/srdit  # noqa: E501
   uv --quiet run --frozen python -m priml.baselines.speedrundit.scripts.prepare_data --verify --source /data/imagenet256  # noqa: E501
 
 '''
@@ -43,20 +43,17 @@ import tempfile
 from torch import Tensor
 
 import numpy as np
-import torch
 
 from priml.baselines.imagenet.data import NUM_CLASSES
 from priml.baselines.speedrundit.data import (
     SpeedrunDiTData,
     imagenet_image_pipeline,
-    read_image,
     read_labels,
     relative_names,
 )
 from priml.data.processors.labels import ImagenetSynsetToIndex
 from priml.data.sources.extracted_imagenet import ExtractedImageNetSource
 from priml.lib.custom_json import IntCodec
-from priml.model.third_party.invae import encode_image, load_invae
 from priml.train.train_loop import TrainLoop
 
 import priml.baselines.imagenet.scripts.prepare_data
@@ -204,54 +201,6 @@ def convert(imagenet: Path, directory: Path, *, workers: int = 0) -> int:
     return len(labels)
 
 
-def encode_invae(
-    directory: Path,
-    *,
-    checkpoint: Path | None = None,
-    device: str = "cuda",
-    limit: int | None = None,
-) -> int:
-    """Encode prepared images as sampled INVAE latents for ``exp001``."""
-    images_dir = directory / "images"
-    names = relative_names(images_dir)
-    if limit is not None:
-        names = names[:limit]
-    if not names:
-        raise ValueError(f"No prepared images under {images_dir}.")
-    labels = read_labels(images_dir / "dataset.json")
-    latents_dir = directory / "vae-in"
-    if latents_dir.exists() and any(latents_dir.iterdir()):
-        raise FileExistsError(f"Refusing to overwrite a non-empty {latents_dir}.")
-    vae = load_invae(checkpoint, device=device)
-    staging = Path(tempfile.mkdtemp(dir=directory, prefix=".vae-in-"))
-    metadata: list[list[str | int]] = []
-    try:
-        for name in names:
-            relative = Path(name)
-            if not relative.stem.startswith("img"):
-                raise ValueError(f"Unexpected prepared image name: {name}")
-            latent_name = relative.with_name(
-                f"img-latents-{relative.stem.removeprefix('img')}.npy"
-            )
-            destination = staging / latent_name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            image = torch.from_numpy(
-                np.ascontiguousarray(read_image(images_dir / name))
-            )
-            latent = encode_image(vae, image[None].to(device)).cpu().numpy()
-            np.save(destination, latent)
-            metadata.append([latent_name.as_posix(), labels[name]])
-        (staging / "dataset.json").write_text(
-            json.dumps({"labels": metadata}), encoding="utf-8"
-        )
-        if latents_dir.exists():
-            latents_dir.rmdir()
-        staging.replace(latents_dir)
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    return len(metadata)
-
-
 def synthesize(
     directory: Path,
     *,
@@ -341,16 +290,6 @@ def main() -> int:
         print(f"wrote {count} images from {imagenet} to {directory / 'images'}")
         return 0
 
-    if flags.encode_invae:
-        count = encode_invae(
-            directory,
-            checkpoint=flags.checkpoint,
-            device=flags.device,
-            limit=flags.limit,
-        )
-        print(f"wrote {count} INVAE latents to {directory / 'vae-in'}")
-        return 0
-
     if flags.source is not None:
         count = verify(flags.source)
         print(f"{flags.source} holds {count} verified samples")
@@ -372,11 +311,7 @@ class _Flags(Protocol):
     synthetic: bool
     verify: bool
     convert: bool
-    encode_invae: bool
     imagenet: Path | None
-    checkpoint: Path | None
-    device: str
-    limit: int | None
     workers: int
     samples: int
     image_size: int
@@ -442,11 +377,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--synthetic", action="store_true")
     parser.add_argument("--verify", action="store_true")
     parser.add_argument("--convert", action="store_true")
-    parser.add_argument("--encode-invae", action="store_true")
     parser.add_argument("--imagenet", type=Path, default=None)
-    parser.add_argument("--checkpoint", type=Path, default=None)
-    parser.add_argument("--device", default="cuda")
-    parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--samples", type=int, default=64)
     parser.add_argument("--image-size", type=int, default=256)

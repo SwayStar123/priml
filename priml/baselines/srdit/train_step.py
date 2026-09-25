@@ -15,7 +15,7 @@ from priml.baselines.srdit.model import ModelOutput, SpeedrunDiT
 from priml.baselines.srdit.objective import LossTerms, SpeedrunObjective
 from priml.baselines.srdit.optimizers import srdit_optimizer
 from priml.model.dinov2 import DinoV2Teacher
-from priml.model.third_party.invae import LATENT_SCALE
+from priml.model.invae import LATENT_SCALE
 from priml.train.custom_types import EMAProtocol
 from priml.train.ema import EMA
 from priml.train.train_step import TrainStep, _assert_uniform_microbatch_count
