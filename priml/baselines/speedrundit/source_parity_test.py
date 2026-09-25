@@ -38,7 +38,11 @@ def test_reg_source_forward_backward_and_five_updates() -> None:
     )
     assert reference["source_commit"] == "3c51606c801dd9e87ee9ef778782766ab7c379ca"
     with host_agnostic_numerics():
+        torch.manual_seed(42)
         model = _source_size_model().train()
+        assert model.state_dict().keys() == reference["state"].keys()
+        for name, expected_tensor in reference["state"].items():
+            assert torch.equal(model.state_dict()[name], expected_tensor), name
         model.load_state_dict(reference["state"])
         inputs = reference["input"]
         torch.manual_seed(123)

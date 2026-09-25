@@ -135,8 +135,8 @@ class ValueResidualAttention(nn.Module):
         cos, sin = rope_factors
         q, k = self.q_norm(q), self.k_norm(k)
         if self.reference_rope:
-            cos = cos.transpose(1, 2).repeat_interleave(2, dim=-1)
-            sin = sin.transpose(1, 2).repeat_interleave(2, dim=-1)
+            cos = cos.transpose(1, 2).repeat_interleave(2, dim=-1).to(q.dtype)
+            sin = sin.transpose(1, 2).repeat_interleave(2, dim=-1).to(q.dtype)
 
             def rotate_half(heads: Tensor) -> Tensor:
                 return torch.stack(

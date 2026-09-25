@@ -360,6 +360,12 @@ class SpeedrunDiT(nn.Module):
         self.wg_norm = nn.RMSNorm(config.hidden_size, eps=1e-6)
         axis_channels = config.hidden_size // config.num_heads // 2
         self.rope = RoPE.Config(channels_head=(axis_channels, axis_channels)).make()
+        if config.reference_rope:
+            factors = self.rope(
+                image_token_positions(self.grid_size, torch.device("cpu"))
+            )
+            self.register_buffer("reference_rope_cos", factors[0], persistent=False)
+            self.register_buffer("reference_rope_sin", factors[1], persistent=False)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -424,7 +430,11 @@ class SpeedrunDiT(nn.Module):
         spatial = self.x_embedder(x).flatten(2).transpose(1, 2)
         cls = self.wg_norm(self.cls_projector(cls_token))[:, None]
         x = torch.cat((cls, spatial), dim=1) + self.pos_embed
-        rope_factors = self.rope(image_token_positions(self.grid_size, x.device))
+        rope_factors = (
+            (self.reference_rope_cos, self.reference_rope_sin)
+            if cfg.reference_rope
+            else self.rope(image_token_positions(self.grid_size, x.device))
+        )
         condition = self.t_embedder(t) + self.y_embedder(
             y,
             force_drop=force_drop_labels,
