@@ -11,8 +11,10 @@ from priml.optimizers.muon import Muon
 from priml.optimizers.parameter_filter import complement, excluding
 
 
-def srdit_optimizer() -> CompositeOptimizer.Config:
-    """Put hidden matrices on shared Muon and other weights on AdamW."""
+def speedrundit_optimizer(
+    *, reference_numerics: bool = True
+) -> CompositeOptimizer.Config:
+    """Use the REG AdamW/Muon split, selecting source arithmetic for exp000."""
     on_muon = excluding(
         Muon.eligible_tensor,
         "x_embedder",
@@ -34,6 +36,7 @@ def srdit_optimizer() -> CompositeOptimizer.Config:
     muon.weight_decay = 0.0
     muon.nesterov = True
     muon.ns_steps = 5
+    muon.reference_numerics = reference_numerics
 
     config = CompositeOptimizer.Config()
     config.optimizers = [adamw, muon]

@@ -7,7 +7,7 @@ from typing import Self, override
 
 import math
 
-from configgle import Fig, Makeable, Makes
+from configgle import Fig, Makeable
 from torch import Tensor, nn
 
 import torch
@@ -228,16 +228,3 @@ class LabelEmbedder(nn.Module):
         elif self.training and self.dropout > 0:
             labels = self.token_drop(labels)
         return self.embedding_table(labels)
-
-
-class ClassEmbedder(LabelEmbedder):
-    """Class embedding that keeps a null row for explicit guidance."""
-
-    class Config(Makes["ClassEmbedder"], LabelEmbedder.Config):
-        """Label embedding configuration with an unconditional class row."""
-
-        @property
-        @override
-        def num_rows(self) -> int:
-            """Include the null class even when training dropout is disabled."""
-            return self.channels_in + 1

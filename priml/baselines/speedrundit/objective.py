@@ -12,7 +12,7 @@ from torch.nn import functional
 
 import torch
 
-from priml.baselines.srdit.model import ModelOutput, Projection
+from priml.baselines.speedrundit.model import ModelOutput, Projection
 from priml.loss.contrastive_flow import contrastive_flow_loss
 from priml.math.diffusion.time_shift import time_shift
 

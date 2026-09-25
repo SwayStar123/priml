@@ -8,7 +8,7 @@ from torch import Tensor
 
 import torch
 
-from priml.baselines.srdit.objective import interpolant
+from priml.baselines.speedrundit.objective import interpolant
 from priml.math.diffusion.euler_maruyama import (
     euler_maruyama_grid,
     guide_drift,
@@ -21,7 +21,7 @@ from priml.math.diffusion.time_shift import time_shift
 
 
 if TYPE_CHECKING:
-    from priml.baselines.srdit.model import ModelOutput, SpeedrunDiT
+    from priml.baselines.speedrundit.model import ModelOutput, SpeedrunDiT
 
 
 def _predict(

@@ -15,13 +15,6 @@ def image_token_positions(grid_size: int, device: torch.device) -> Tensor:
     return torch.cat((spatial.new_zeros(1, 2), spatial))[None]
 
 
-def sinusoidal_positions(grid_size: int, channels: int) -> Tensor:
-    """Build a fixed 2D sine/cosine table with a zero CLS position."""
-    return sincos_position_table(
-        channels, grid_size, compute_dtype=torch.float32
-    ).unsqueeze(0)
-
-
 def sincos_position_table(
     channels: int,
     grid: int,
