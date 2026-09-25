@@ -7,7 +7,8 @@ from torch import nn
 import pytest
 import torch
 
-from priml.baselines.srdit.teacher import DinoV2Teacher, _load_encoder
+from priml.hub import load_torch_hub_distributed
+from priml.model.dinov2 import DinoV2Teacher
 
 
 def test_frozen_teacher_cost_has_no_backward_work() -> None:
@@ -38,9 +39,15 @@ def test_rank_zero_populates_hub_before_other_ranks(
     monkeypatch.setattr(torch.distributed, "get_rank", lambda: rank)
     monkeypatch.setattr(torch.distributed, "broadcast_object_list", broadcast)
 
-    assert _load_encoder("dinov2_vitb14") is encoder
+    assert (
+        load_torch_hub_distributed("facebookresearch/dinov2", "dinov2_vitb14")
+        is encoder
+    )
     rank = 1
-    assert _load_encoder("dinov2_vitb14") is encoder
+    assert (
+        load_torch_hub_distributed("facebookresearch/dinov2", "dinov2_vitb14")
+        is encoder
+    )
     assert events == ["load:0", "broadcast:0", "broadcast:1", "load:1"]
 
 
@@ -68,7 +75,9 @@ def test_rank_zero_hub_failure_reaches_other_ranks(
     monkeypatch.setattr(torch.distributed, "broadcast_object_list", broadcast)
 
     with pytest.raises(OSError, match="hub unavailable"):
-        _load_encoder("dinov2_vitb14")
+        load_torch_hub_distributed("facebookresearch/dinov2", "dinov2_vitb14")
     rank = 1
-    with pytest.raises(RuntimeError, match="rank 0 could not load DINOv2"):
-        _load_encoder("dinov2_vitb14")
+    with pytest.raises(
+        RuntimeError, match="rank 0 could not load facebookresearch/dinov2"
+    ):
+        load_torch_hub_distributed("facebookresearch/dinov2", "dinov2_vitb14")

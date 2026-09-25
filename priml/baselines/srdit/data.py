@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader, Dataset, DistributedSampler
 import numpy as np
 import torch
 
-from priml.baselines.speedrundit.data import read_image, read_labels
+from priml.data.sources.prepared_image_latents import read_image, read_labels
 from priml.paths import resolve_working_dir
 from priml.timer import CheckpointableStepTimer
 

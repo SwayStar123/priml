@@ -55,7 +55,7 @@ from priml.data.processors.bytes import (
 )
 from priml.data.processors.labels import ImagenetSynsetToIndex
 from priml.data.sources.extracted_imagenet import ExtractedImageNetSource
-from priml.lib.custom_json import DictCodec, IntCodec, ListCodec, StrCodec, loads
+from priml.data.sources.prepared_image_latents import read_image, read_labels
 from priml.math.seed import salt
 from priml.paths import resolve_working_dir
 from priml.runtime import get_device
@@ -394,32 +394,6 @@ def _pad(x: Tensor, pad: int) -> Tensor:
     return torch.cat([x, filler], dim=0)
 
 
-def read_labels(manifest: Path) -> dict[str, int]:
-    """Read the label manifest, keyed by slash-separated latent name.
-
-    One parser for the loader and the preparer's verifier: two would agree
-    only until one of them stopped normalizing separators.
-
-    Args:
-      manifest: ``vae-in/dataset.json``.
-
-    Returns:
-      labels: Class index per relative latent name.
-
-    """
-    payload = DictCodec.coerce(loads(manifest.read_text(encoding="utf-8")))
-    entries = [ListCodec.coerce(entry) for entry in ListCodec.coerce(payload["labels"])]
-    # Keys are normalized to forward slashes: a corpus prepared on Windows
-    # writes backslashes into the manifest but is read on either platform.
-    return {
-        StrCodec.coerce(entry[0]).replace("\\", "/"): IntCodec.coerce(
-            entry[1],
-            default=None,
-        )
-        for entry in entries
-    }
-
-
 def relative_names(root: Path) -> list[str]:
     """Enumerate a tree's files as sorted, slash-separated relative names.
 
@@ -638,17 +612,6 @@ def _load_corpus(
         ),
         images=images,
     )
-
-
-def read_image(path: Path) -> NDArray[np.uint8]:
-    """Decode one stored image to ``[channels, height, width]`` uint8."""
-    if path.suffix.lower() == ".npy":
-        array = cast("NDArray[np.uint8]", np.load(path))
-        shape = cast("tuple[int, ...]", array.shape)
-        return array.reshape(-1, *shape[-2:])
-    with Image.open(path) as handle:
-        array = np.asarray(handle.convert("RGB"))
-    return array.transpose(2, 0, 1)
 
 
 def _load_rows(

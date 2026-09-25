@@ -153,6 +153,17 @@ def test_shift_and_sampler_return_expected_latent_shapes() -> None:
     assert sampled.shape == latents.shape
     assert sampled_cls.shape == cls.shape
     assert torch.isfinite(sampled).all()
+    # The updated model keeps a null embedding even when training dropout is off.
+    guided, _ = sample_latents(
+        model,
+        latents,
+        cls,
+        torch.tensor([1, 2]),
+        num_steps=2,
+        cfg_scale=2,
+        shift_time=False,
+    )
+    assert torch.isfinite(guided).all()
 
 
 def test_zero_cls_guidance_keeps_conditional_cls_drift() -> None:

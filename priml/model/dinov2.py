@@ -9,31 +9,8 @@ from torch.nn import functional
 import torch
 
 from priml.cost import Cost, elementwise_cost, matmul_cost
+from priml.hub import load_torch_hub_distributed
 from priml.model.attention.kernel import attention_kernel_cost
-
-
-def _load_encoder(variant: str) -> nn.Module:
-    """Populate the shared Hub cache before the other ranks load DINOv2."""
-    distributed = torch.distributed
-    if not distributed.is_available() or not distributed.is_initialized():
-        return torch.hub.load("facebookresearch/dinov2", variant)
-
-    encoder = None
-    error = None
-    if distributed.get_rank() == 0:
-        try:
-            encoder = torch.hub.load("facebookresearch/dinov2", variant)
-        except Exception as exc:  # noqa: BLE001 - propagate Hub failures to every rank
-            error = exc
-    status = [str(error) if error is not None else None]
-    distributed.broadcast_object_list(status, src=0)
-    if status[0] is not None:
-        if error is not None:
-            raise error
-        raise RuntimeError(f"rank 0 could not load DINOv2: {status[0]}")
-    if encoder is None:
-        encoder = torch.hub.load("facebookresearch/dinov2", variant)
-    return encoder
 
 
 class DinoV2Teacher(nn.Module):
@@ -128,7 +105,9 @@ class DinoV2Teacher(nn.Module):
         if config.image_size % 16:
             raise ValueError("image_size must be divisible by 16")
         self.config = config
-        self.encoder = _load_encoder(config.variant)
+        self.encoder = load_torch_hub_distributed(
+            "facebookresearch/dinov2", config.variant
+        )
         self.encoder.eval().requires_grad_(False)
         patch_grid = config.image_size // 16
         # Match the reference's 224/448-pixel input and resized DINO position table.

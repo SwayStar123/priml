@@ -182,10 +182,10 @@ Local, each for a measured or structural reason:
 - **The sampler.** `math.diffusion.ddpm_ddim` is the DDPM posterior step. Under
   the straight path it discretizes the reverse SDE with diffusion
   `2t / (1 - t)`, where the reference's Euler--Maruyama sampler uses `2t`; the
-  two agree only in the continuous limit, and `math.diffusion` has no
-  Euler--Maruyama step nor a score recovered from a velocity under an arbitrary
-  path. The sampler therefore reuses the objective's own `interpolant` and
-  `time_transform` slots instead, and `parity.py` checks it bit for bit.
+  two agree only in the continuous limit. The shared Euler--Maruyama math
+  integrates both latent and class-token streams; this baseline supplies its
+  objective's `interpolant` and `time_transform` slots. `parity.py` checks the
+  result bit for bit.
 - **`VisionRoPE`.** `priml.model.attention.rope.RoPE` computes the same
   rotation bit for bit in float32, but rotates in float32 whatever the
   activation dtype, while the reference rotates in it: under exp000's bf16

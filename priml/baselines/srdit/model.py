@@ -191,12 +191,16 @@ class SpeedrunDiT(nn.Module):
                     dtype=dtype,
                 )
                 + cost(
-                    TimestepEmbedder.Config(channels=width),
+                    TimestepEmbedder.Config(channels_out=width),
                     batch_size=batch_size,
                     dtype=dtype,
                 )
                 + cost(
-                    ClassEmbedder.Config(num_classes=self.num_classes, channels=width),
+                    ClassEmbedder.Config(
+                        channels_in=self.num_classes,
+                        channels_out=width,
+                        dropout=self.class_dropout_prob,
+                    ),
                     batch_size=batch_size,
                     dtype=dtype,
                 )
@@ -295,10 +299,12 @@ class SpeedrunDiT(nn.Module):
             config.patch_size,
             config.patch_size,
         )
-        self.t_embedder = TimestepEmbedder.Config(channels=config.hidden_size).make()
+        self.t_embedder = TimestepEmbedder.Config(
+            channels_out=config.hidden_size
+        ).make()
         self.y_embedder = ClassEmbedder.Config(
-            num_classes=config.num_classes,
-            channels=config.hidden_size,
+            channels_in=config.num_classes,
+            channels_out=config.hidden_size,
             dropout=config.class_dropout_prob,
         ).make()
         self.cls_projector = nn.Linear(config.cls_channels, config.hidden_size)

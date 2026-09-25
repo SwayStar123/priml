@@ -11,12 +11,9 @@ which discretizes the reverse SDE whose diffusion is ``2t / (1 - t)`` under
 the straight path, where this one's is ``2t``: both sample the same marginals
 in the continuous limit, and at any finite step count they are different
 samplers producing different images. Reproducing the reported numbers needs
-this one, and ``math.diffusion`` carries no Euler--Maruyama step, nor a score
-recovered from a velocity under an arbitrary path.
-
-What is written here is also the loop, because this model carries two coupled
-streams: the latent and the class token share a time grid and each feeds the
-other's velocity, so they advance together.
+this one. The two-stream Euler--Maruyama loop and score conversion now live in
+``math.diffusion.euler_maruyama``; this module supplies the model-specific
+velocity field, path, and guidance choices.
 
 References:
   https://github.com/SwayStar123/SpeedrunDiT
@@ -50,6 +47,14 @@ from priml.baselines.speedrundit.loss import (
     resolution_time_shift,
 )
 from priml.math.custom_types import TensorFn
+from priml.math.diffusion.euler_maruyama import (
+    euler_maruyama_grid,
+    guide_drift,
+    integrate_two_streams,
+    repa_diffusion,
+    velocity_to_drift,
+    velocity_to_score as score_from_coefficients,
+)
 
 
 if TYPE_CHECKING:
@@ -57,19 +62,6 @@ if TYPE_CHECKING:
 
 
 __all__ = ["EulerMaruyamaSampler", "repa_diffusion", "velocity_to_score"]
-
-
-def repa_diffusion(t: Tensor) -> Tensor:
-    """Squared diffusion coefficient ``g(t)^2 = 2t`` of the reference's SDE.
-
-    Args:
-      t: Flow times.
-
-    Returns:
-      diffusion: ``2 * t``.
-
-    """
-    return 2 * t
 
 
 def velocity_to_score(
@@ -105,9 +97,14 @@ def velocity_to_score(
 
     """
     coefficients = path(t)
-    ratio = coefficients.alpha / coefficients.d_alpha
-    variance = coefficients.sigma**2 - ratio * coefficients.d_sigma * coefficients.sigma
-    return (ratio * velocity - state) / variance
+    return score_from_coefficients(
+        velocity,
+        state,
+        alpha=coefficients.alpha,
+        sigma=coefficients.sigma,
+        d_alpha=coefficients.d_alpha,
+        d_sigma=coefficients.d_sigma,
+    )
 
 
 class EulerMaruyamaSampler:
@@ -190,8 +187,7 @@ class EulerMaruyamaSampler:
 
         """
         cfg = self.config
-        grid = torch.linspace(1.0, cfg.last_time, cfg.num_steps, dtype=torch.float64)
-        grid = torch.cat([grid, grid.new_zeros(1)])
+        grid = euler_maruyama_grid(cfg.num_steps, last_time=cfg.last_time)
         if self.time_transform is not None:
             grid = self.time_transform(grid, shape=shape)
         return grid
@@ -232,14 +228,13 @@ class EulerMaruyamaSampler:
                 )
             null = torch.full_like(label, labels.num_classes)
         grid = self.times(tuple(media.shape[1:]))
-        # Carried in float64 and handed to the model in its own dtype, as the
-        # reference does, so the accumulation over hundreds of steps is not
-        # the model's precision.
-        latent, cls = media.to(torch.float64), cls_token.to(torch.float64)
-        last = grid.shape[0] - 2
-        for index in range(last + 1):
-            t_curr, t_next = grid[index], grid[index + 1]
-            drift, drift_cls = self._drift(
+        # The shared integrator carries both streams in float64 and preserves
+        # the reference's order of drift updates and independent noise draws.
+        latent, cls = integrate_two_streams(
+            media,
+            cls_token,
+            grid,
+            lambda latent, cls, t_curr: self._drift(
                 model,
                 latent,
                 cls,
@@ -247,19 +242,9 @@ class EulerMaruyamaSampler:
                 label=label,
                 null=null,
                 dtype=media.dtype,
-            )
-            dt = t_next - t_curr
-            if index == last:
-                latent = latent + dt * drift
-                cls = cls + dt * drift_cls
-                break
-            # Drawn after the forwards, latent before class, as the reference
-            # draws them; the model draws nothing in eval.
-            noise = torch.randn_like(latent) * torch.sqrt(torch.abs(dt))
-            noise_cls = torch.randn_like(cls) * torch.sqrt(torch.abs(dt))
-            scale = torch.sqrt(self.config.diffusion(t_curr))
-            latent = latent + drift * dt + scale * noise
-            cls = cls + drift_cls * dt + scale * noise_cls
+            ),
+            self.config.diffusion,
+        )
         return EulerMaruyamaSampler.Output(
             media=latent.to(media.dtype),
             cls_token=cls.to(cls_token.dtype),
@@ -322,8 +307,8 @@ class EulerMaruyamaSampler:
         )
         weight = cfg.guidance
         return (
-            drift_weak + weight * (drift_strong - drift_weak),
-            drift_weak_cls + weight * (drift_strong_cls - drift_weak_cls),
+            guide_drift(drift_strong, drift_weak, weight),
+            guide_drift(drift_strong_cls, drift_weak_cls, weight),
         )
 
 
@@ -339,4 +324,4 @@ def _sde_drift(
     velocity = velocity.to(torch.float64)
     t = time.view(-1, *[1] * (state.ndim - 1))
     score = velocity_to_score(velocity, state, path, t)
-    return velocity - 0.5 * diffusion * score
+    return velocity_to_drift(velocity, score, diffusion)

@@ -9,6 +9,14 @@ from torch import Tensor
 import torch
 
 from priml.baselines.srdit.objective import interpolant
+from priml.math.diffusion.euler_maruyama import (
+    euler_maruyama_grid,
+    guide_drift,
+    integrate_two_streams,
+    repa_diffusion,
+    velocity_to_drift,
+    velocity_to_score as score_from_coefficients,
+)
 from priml.math.diffusion.time_shift import time_shift
 
 
@@ -43,9 +51,14 @@ def score_from_velocity(
     """Convert interpolant velocity to score, matching the SiT SDE sampler."""
     alpha, sigma, d_alpha, d_sigma = interpolant(t, path)
     shape = (slice(None),) + (None,) * (noisy.ndim - 1)
-    ratio = alpha[shape] / d_alpha[shape]
-    variance = sigma[shape].square() - ratio * d_sigma[shape] * sigma[shape]
-    return (ratio * velocity - noisy) / variance
+    return score_from_coefficients(
+        velocity,
+        noisy,
+        alpha=alpha[shape],
+        sigma=sigma[shape],
+        d_alpha=d_alpha[shape],
+        d_sigma=d_sigma[shape],
+    )
 
 
 @torch.no_grad()
@@ -75,22 +88,13 @@ def sample_latents(
     was_training = model.training
     model.eval()
     try:
-        x, cls = latents.double(), cls_latents.double()
-        t_steps = torch.cat(
-            (
-                torch.linspace(
-                    1, 0.04, num_steps, device=x.device, dtype=torch.float64
-                ),
-                torch.zeros(1, device=x.device, dtype=torch.float64),
-            )
-        )
+        t_steps = euler_maruyama_grid(num_steps, device=latents.device)
         if shift_time:
             t_steps = time_shift(t_steps, latents[0].numel(), shift_base)
-        for index in range(num_steps):
-            t_cur, t_next = t_steps[index], t_steps[index + 1]
+
+        def drift(x: Tensor, cls: Tensor, t_cur: Tensor) -> tuple[Tensor, Tensor]:
             t = t_cur.expand(x.shape[0])
             use_cfg = cfg_scale > 1 and guidance_low <= t_cur <= guidance_high
-
             cond = _predict(
                 model,
                 x,
@@ -103,9 +107,11 @@ def sample_latents(
             )
             score_x = score_from_velocity(cond.velocity.double(), x, t, path)
             score_cls = score_from_velocity(cond.cls_velocity.double(), cls, t, path)
-            diffusion = 2 * t_cur
-            drift_x = cond.velocity.double() - 0.5 * diffusion * score_x
-            drift_cls = cond.cls_velocity.double() - 0.5 * diffusion * score_cls
+            diffusion = repa_diffusion(t_cur)
+            drift_x = velocity_to_drift(cond.velocity.double(), score_x, diffusion)
+            drift_cls = velocity_to_drift(
+                cond.cls_velocity.double(), score_cls, diffusion
+            )
             if use_cfg:
                 null = torch.full_like(labels, model.config.num_classes)
                 uncond = _predict(
@@ -122,19 +128,18 @@ def sample_latents(
                 score_cls_u = score_from_velocity(
                     uncond.cls_velocity.double(), cls, t, path
                 )
-                drift_u = uncond.velocity.double() - 0.5 * diffusion * score_u
-                drift_cls_u = (
-                    uncond.cls_velocity.double() - 0.5 * diffusion * score_cls_u
+                drift_u = velocity_to_drift(
+                    uncond.velocity.double(), score_u, diffusion
                 )
-                drift_x = drift_u + cfg_scale * (drift_x - drift_u)
+                drift_cls_u = velocity_to_drift(
+                    uncond.cls_velocity.double(), score_cls_u, diffusion
+                )
+                drift_x = guide_drift(drift_x, drift_u, cfg_scale)
                 if cls_cfg_scale > 0:
-                    drift_cls = drift_cls_u + cls_cfg_scale * (drift_cls - drift_cls_u)
-            dt = t_next - t_cur
-            x = x + drift_x * dt
-            cls = cls + drift_cls * dt
-            if index < num_steps - 1:
-                x = x + (diffusion * -dt).sqrt() * torch.randn_like(x)
-                cls = cls + (diffusion * -dt).sqrt() * torch.randn_like(cls)
+                    drift_cls = guide_drift(drift_cls, drift_cls_u, cls_cfg_scale)
+            return drift_x, drift_cls
+
+        x, cls = integrate_two_streams(latents, cls_latents, t_steps, drift)
         return x.to(latents.dtype), cls.to(cls_latents.dtype)
     finally:
         model.train(was_training)

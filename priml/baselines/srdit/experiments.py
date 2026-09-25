@@ -33,7 +33,7 @@ def exp001() -> SpeedrunTrainLoop:
     """Configure SiT-B/1 with REG, CFM, Muon, and layerwise MLP widths.
 
     Hypothesis:
-      The later REG branch's Muon optimizer, contrastive flow term, and
+      The later REG branch's Muon optimizer, RMS normalization, and
       depth-dependent MLP widths improve the original SpeedrunDiT recipe.
       Shared Muon and RoPE are used, so numerical identity is not claimed.
 

@@ -2,7 +2,7 @@ r"""SR-DiT experiment ladder.
 
 ``exp000`` REPRODUCES the reference pinned at
 c24c2ff25699cce63174ca56c2afcfeeb225e367 rather than stating a naive recipe of
-our own, and is never edited. That is a departure from the usual meaning of
+our own, and its behavior is frozen. That is a departure from the usual meaning of
 ``exp000`` and it is deliberate: the baseline exists to establish that Priml's
 components compute the published model exactly, so the control has to be the
 published model, SPRINT routing and value residuals included. The bit-for-bit

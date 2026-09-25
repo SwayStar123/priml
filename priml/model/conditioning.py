@@ -1,8 +1,13 @@
-"""Diffusion timestep and class conditioning modules."""
+"""Shared timestep and class embedders for latent diffusion transformers."""
 
 from __future__ import annotations
 
-from configgle import Fig
+from dataclasses import KW_ONLY
+from typing import Self, override
+
+import math
+
+from configgle import Fig, Makeable, Makes
 from torch import Tensor, nn
 
 import torch
@@ -12,14 +17,24 @@ from priml.math.diffusion.conditioning import timestep_embedding
 
 
 class TimestepEmbedder(nn.Module):
-    """Project a sinusoidal timestep into the model's conditioning width."""
+    """Embed a scalar flow time into the conditioning width."""
 
-    class Config(Fig["TimestepEmbedder"]):
-        channels: int = -1
-        """Width of the projected conditioning vector."""
+    class Config(Fig["TimestepEmbedder"], kw_only=False):
+        """Configuration for TimestepEmbedder."""
 
-        frequency_channels: int = 256
-        """Width of the fixed sinusoidal input embedding."""
+        channels_out: int = -1
+        """Conditioning width produced by the embedder."""
+
+        _: KW_ONLY
+
+        channels_frequency: int = 256
+        """Width of the raw sinusoidal features feeding the projection."""
+
+        max_period: float = 10_000.0
+        """Longest sinusoid period; sets the lowest represented frequency."""
+
+        activation: Makeable[nn.Module] | None = None
+        """Activation between the two projections; ``None`` uses ``SiLU``."""
 
         def cost(
             self,
@@ -28,27 +43,37 @@ class TimestepEmbedder(nn.Module):
             dtype: torch.dtype | None,
             **kwargs: object,
         ) -> Cost:
-            """Cost the two projections and SiLU for one batch."""
+            """Cost one timestep embedding.
+
+            Args:
+              batch_size: Sequences per step.
+              dtype: Activation dtype; ``None`` is torch's default.
+              **kwargs: The open bus, unread here.
+
+            Returns:
+              cost: Whole-invocation cost of this module.
+
+            """
             del kwargs
             return (
                 matmul_cost(
-                    channels_in=self.frequency_channels,
-                    channels_out=self.channels,
+                    channels_in=self.channels_frequency,
+                    channels_out=self.channels_out,
                     bias=True,
                     rows=batch_size,
                     dtype=dtype,
                 )
                 + matmul_cost(
-                    channels_in=self.channels,
-                    channels_out=self.channels,
+                    channels_in=self.channels_out,
+                    channels_out=self.channels_out,
                     bias=True,
                     rows=batch_size,
                     dtype=dtype,
                 )
                 + elementwise_cost(
-                    primal=5 * batch_size * self.channels,
-                    adjoint=5 * batch_size * self.channels,
-                    channels=self.channels,
+                    primal=5,
+                    adjoint=5,
+                    channels=self.channels_out,
                     rows=batch_size,
                     dtype=dtype,
                 )
@@ -56,30 +81,80 @@ class TimestepEmbedder(nn.Module):
 
     def __init__(self, config: Config) -> None:
         super().__init__()
-        self.frequency_channels = config.frequency_channels
+        self.channels_frequency = config.channels_frequency
+        self.max_period = config.max_period
+        activation = (
+            nn.SiLU() if config.activation is None else config.activation.make()
+        )
         self.mlp = nn.Sequential(
-            nn.Linear(config.frequency_channels, config.channels),
-            nn.SiLU(),
-            nn.Linear(config.channels, config.channels),
+            nn.Linear(config.channels_frequency, config.channels_out, bias=True),
+            activation,
+            nn.Linear(config.channels_out, config.channels_out, bias=True),
         )
 
-    def forward(self, t: Tensor) -> Tensor:
-        """Embed one time per batch example."""
-        return self.mlp(timestep_embedding(t, self.frequency_channels).to(t.dtype))
+    def frequencies(self, t: Tensor) -> Tensor:
+        """Build raw sinusoidal features for a batch of times.
+
+        Args:
+          t: Flow times, ``[batch]``.
+
+        Returns:
+          features: ``[batch, channels_frequency]``, ``cos`` then ``sin``.
+
+        """
+        return timestep_embedding(t, self.channels_frequency, self.max_period)
+
+    @override
+    def forward(self, t: Tensor, **kwargs: object) -> Tensor:
+        """Embed flow times.
+
+        Args:
+          t: Flow times, ``[batch]``.
+          **kwargs: The open bus, unread here.
+
+        Returns:
+          conditioning: ``[batch, channels_out]``.
+
+        """
+        del kwargs
+        return self.mlp(self.frequencies(t).to(t.dtype))
 
 
-class ClassEmbedder(nn.Module):
-    """Class conditioning with one extra unconditional label."""
+class LabelEmbedder(nn.Module):
+    """Embed class labels, dropping a fraction to a learned null class."""
 
-    class Config(Fig["ClassEmbedder"]):
-        num_classes: int = -1
-        """Number of conditional labels, excluding the null class."""
+    class Config(Fig["LabelEmbedder"], kw_only=False):
+        """Configuration for LabelEmbedder."""
 
-        channels: int = -1
-        """Width of each class embedding."""
+        channels_in: int = -1
+        """Number of real classes; the null class is appended beyond them."""
+
+        channels_out: int = -1
+        """Conditioning width produced by the table."""
+
+        _: KW_ONLY
 
         dropout: float = 0.1
-        """Probability of replacing a label with the null class."""
+        """Probability of replacing a label with the null class while training.
+
+        Zero removes the null row entirely rather than leaving it untrained,
+        so a run without classifier-free guidance carries no dead parameters."""
+
+        @override
+        def finalize(self) -> Self:
+            if math.isnan(self.dropout) or self.dropout < 0.0 or self.dropout >= 1.0:
+                raise ValueError(f"dropout must be in [0, 1); got {self.dropout}.")
+            return super().finalize()
+
+        @property
+        def num_rows(self) -> int:
+            """Rows in the embedding table, including any null class.
+
+            Returns:
+              rows: ``channels_in`` plus one when dropout is enabled.
+
+            """
+            return self.channels_in + int(self.dropout > 0)
 
         def cost(
             self,
@@ -88,33 +163,81 @@ class ClassEmbedder(nn.Module):
             dtype: torch.dtype | None,
             **kwargs: object,
         ) -> Cost:
-            """Cost embedding lookup; all class rows are owned."""
+            """Cost one label lookup.
+
+            Args:
+              batch_size: Sequences per step.
+              dtype: Activation dtype; ``None`` is torch's default.
+              **kwargs: The open bus, unread here.
+
+            Returns:
+              cost: Whole-invocation cost of this module.
+
+            """
             del kwargs
-            table = (self.num_classes + 1) * self.channels
+            # One row read per lookup, as ``priml.model.embedding`` counts it.
+            table = self.num_rows * self.channels_out
             return traffic(
                 "primal",
                 "selection",
-                elements=batch_size * self.channels,
+                elements=batch_size * self.channels_out,
                 dtype=dtype,
-            ) + Cost(
-                params=table,
-                params_active=min(batch_size, self.num_classes + 1) * self.channels,
-            )
+            ) + Cost(params=table, params_active=self.channels_out)
 
     def __init__(self, config: Config) -> None:
         super().__init__()
-        if not 0 <= config.dropout <= 1:
-            raise ValueError("dropout must be in [0, 1]")
-        self.num_classes = config.num_classes
+        self.num_classes = config.channels_in
         self.dropout = config.dropout
-        self.embedding_table = nn.Embedding(config.num_classes + 1, config.channels)
+        self.embedding_table = nn.Embedding(config.num_rows, config.channels_out)
 
-    def forward(self, labels: Tensor, *, force_drop: Tensor | None = None) -> Tensor:
-        """Embed labels, optionally replacing them with the null class."""
+    def token_drop(self, labels: Tensor) -> Tensor:
+        """Replace a random fraction of labels with the null class.
+
+        Args:
+          labels: Class indices, ``[batch]``.
+
+        Returns:
+          labels: Indices with dropped entries set to the null class.
+
+        """
+        drop = torch.rand(labels.shape[0], device=labels.device) < self.dropout
+        return torch.where(drop, self.num_classes, labels)
+
+    @override
+    def forward(
+        self,
+        labels: Tensor,
+        *,
+        force_drop: Tensor | None = None,
+        **kwargs: object,
+    ) -> Tensor:
+        """Embed labels, dropping some while training.
+
+        Args:
+          labels: Class indices, ``[batch]``.
+          force_drop: Explicit mask selecting the null class when supplied.
+          **kwargs: The open bus, unread here.
+
+        Returns:
+          conditioning: ``[batch, channels_out]``.
+
+        """
+        del kwargs
         if force_drop is not None:
-            drop = force_drop.bool()
-        elif self.training and self.dropout:
-            drop = torch.rand(labels.shape, device=labels.device) < self.dropout
-        else:
-            drop = torch.zeros_like(labels, dtype=torch.bool)
-        return self.embedding_table(torch.where(drop, self.num_classes, labels))
+            labels = torch.where(force_drop.bool(), self.num_classes, labels)
+        elif self.training and self.dropout > 0:
+            labels = self.token_drop(labels)
+        return self.embedding_table(labels)
+
+
+class ClassEmbedder(LabelEmbedder):
+    """Class embedding that keeps a null row for explicit guidance."""
+
+    class Config(Makes["ClassEmbedder"], LabelEmbedder.Config):
+        """Label embedding configuration with an unconditional class row."""
+
+        @property
+        @override
+        def num_rows(self) -> int:
+            """Include the null class even when training dropout is disabled."""
+            return self.channels_in + 1
